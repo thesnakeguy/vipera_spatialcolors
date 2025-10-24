@@ -6,7 +6,7 @@ library(ape)
 
 
 # Set the path to your extracted images
-img_dir <- "C:/Users/pdeschepper/Desktop/PERSONAL/DeepLearning/ImageSegmentation/Snakes_ImageSegmentation_keras/Vipera_segmentation_test_dataset/Vipera_aspis_gbif_export/Extracted_snakes/"
+img_dir <- "C:/Users/pdeschepper/Desktop/PERSONAL/DeepLearning/ImageSegmentation/Snakes_ImageSegmentation_keras/Vipera_segmentation_test_dataset/Extracted_snakes/"
 # Get a list of all the PNG files
 images <- list.files(img_dir, pattern = "*.png$", full.names = TRUE)
 
