@@ -5,6 +5,7 @@ library(pheatmap)
 library(imager) 
 library(stringr)
 library(dplyr)
+library(png)
 
 # --- Set working dir where images are --- ####
 img_dir <- "C:/Users/pdeschepper/Desktop/PERSONAL/DeepLearning/ImageSegmentation/Snakes_ImageSegmentation_keras/Vipera_segmentation_test_dataset/Extracted_snakes/"
@@ -124,7 +125,14 @@ compare_visual_base_r_simple <- function(original_path, standardized_path) {
   par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1) 
 }
 
-compare_visual_base_r_simple(images[1], standardized_images[[1]])
+compare_visual_base_r_simple(images[7], standardized_images[[7]])
+
+# Check histogram of CIELAB image L channel
+img <- imager::load.image(standardized_images[[1]])
+img_rgb <- imager::channel(img, 1:3)
+img_lab <- RGBtoLab(img_rgb)
+L_channel <- channel(img_lab, 1) 
+hist(L_channel, breaks = 100)
 
 # ---- Kmeans color clustering for a single image ---- ####
 # Use the first standardized image path
