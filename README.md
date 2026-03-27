@@ -23,16 +23,16 @@ color ~ subspecies + environment
 
 ## Pipeline
 
-### 1. 🏋️ Train Image Segmentation Model
+### 1. Train Image Segmentation Model
 Annotated training images are sourced from [Roboflow](https://roboflow.com/). A custom segmentation model is trained to isolate the snake from its background in field photographs.
 
-### 2. 🌍 Apply Model to GBIF Images
+### 2. Apply Model to GBIF Images
 The trained segmentation model is applied to georeferenced images downloaded from GBIF, producing masked outputs that isolate the animal body.
 
-### 3. 🌑 Shadow Removal
+### 3. Shadow Removal
 A pretrained shadow removal model is applied to the segmented images to minimize the effect of lighting conditions on perceived color.
 
-### 4. 🎨 Color Clustering
+### 4. Color Clustering
 K-means clustering (or an alternative method) is applied to the shadow-corrected, segmented images to extract dominant colors. Two primary color variables are targeted:
 - **Background color** — the dorsal base coloration
 - **Zigzag color** — the contrasting dorsal pattern
@@ -48,10 +48,10 @@ The study is designed as a **proof of concept** for using opportunistic citizen 
 ## Results
 
 ### Segmentation Output
-![Segmentation example](__Vipera_segmentation.png)
+![Segmentation example](Vipera_segmentation.png)
 
 ### Color Clustering Output
-![Color clustering example](__Vipera_colorclustering.png)
+![Color clustering example](Vipera_colorclustering.png)
 
 ---
 
@@ -69,18 +69,6 @@ The study is designed as a **proof of concept** for using opportunistic citizen 
 
 ## Data Sources
 
-- **Training annotations**: [Roboflow](https://roboflow.com/)
+- **Training annotations**: [Roboflow dataset](https://universe.roboflow.com/thesnakeguy/vipera-segmentation)
 - **Occurrence images**: [GBIF](https://www.gbif.org/)
 - **Environmental data**: e.g., CHELSA, WorldClim, Copernicus Land Cover
-
----
-
-## Citation
-
-> *Add citation or reference if/when published.*
-
----
-
-## License
-
-> *Specify license here.*
