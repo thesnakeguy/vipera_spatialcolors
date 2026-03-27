@@ -55,18 +55,6 @@ The study is designed as a **proof of concept** for using opportunistic citizen 
 
 ---
 
-## Dependencies
-
-> *Fill in based on your environment (e.g., Python version, key packages such as `ultralytics`, `scikit-learn`, `Pillow`, `rasterio`, etc.)*
-
----
-
-## Usage
-
-> *Add instructions for running the pipeline steps here.*
-
----
-
 ## Data Sources
 
 - **Training annotations**: [Roboflow dataset](https://universe.roboflow.com/thesnakeguy/vipera-segmentation)
