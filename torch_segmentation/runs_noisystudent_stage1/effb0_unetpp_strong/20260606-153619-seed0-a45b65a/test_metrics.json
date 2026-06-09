@@ -1,0 +1,541 @@
+{
+  "split": "test",
+  "seed": 0,
+  "n": 131,
+  "encoder": "timm-efficientnet-b0",
+  "arch": "unetpp",
+  "metrics": {
+    "iou_fg": 0.8548009255201248,
+    "leakage": 0.07725778605017708,
+    "recall": 0.9206943912760079,
+    "boundary_iou": 0.7120778185259102,
+    "iou_bg": 0.9887354058690293,
+    "iou_mean": 0.9217681656945771
+  },
+  "per_image": [
+    {
+      "image": "422298491_jpg.rf.VWQfwFz0CRbCSDJejDCT",
+      "iou_fg": 0.8457495429616088
+    },
+    {
+      "image": "434052707_jpg.rf.B4b8f28fBYNVYc5f1tpF",
+      "iou_fg": 0.6970702045328911
+    },
+    {
+      "image": "432362761_jpg.rf.QueoKc2mi0gfwEy2oWcs",
+      "iou_fg": 0.9288760662318113
+    },
+    {
+      "image": "442597518_jpg.rf.twKkCQgBVyMGwpAk4Yq3",
+      "iou_fg": 0.8645096056622852
+    },
+    {
+      "image": "465220887_jpg.rf.V4MKk09Uytdk9FtV2EKC",
+      "iou_fg": 0.8737697280298177
+    },
+    {
+      "image": "462455760_jpg.rf.Hx7cClgdJ9vgM8v3VqgC",
+      "iou_fg": 0.75592382613752
+    },
+    {
+      "image": "430051173_jpg.rf.XbFlnFSnFI8DjsJa5383",
+      "iou_fg": 0.9306225421087779
+    },
+    {
+      "image": "438308029_jpg.rf.IkQHL54KAK0oHVXNFohH",
+      "iou_fg": 0.9533191876326159
+    },
+    {
+      "image": "439342615_jpg.rf.NgVTqwgIX03Y1wXtIde3",
+      "iou_fg": 0.9204144238004283
+    },
+    {
+      "image": "437617708_jpg.rf.RpDxZuGDDIX5J6Nf03Km",
+      "iou_fg": 0.8810457516339869
+    },
+    {
+      "image": "420819126_jpg.rf.PBJagag37053FweRkcGn",
+      "iou_fg": 0.12061127768643003
+    },
+    {
+      "image": "419241942_jpg.rf.3xbZjdgwii6k40S4tt59",
+      "iou_fg": 0.790994551864117
+    },
+    {
+      "image": "432016411_jpg.rf.JsQ5LEX5JWMQYsPCFB5d",
+      "iou_fg": 0.9868000572355242
+    },
+    {
+      "image": "432291239_jpg.rf.4JJ0vu1yF3UBy6JxvOLG",
+      "iou_fg": 0.8499486125385406
+    },
+    {
+      "image": "444191402_jpg.rf.7bXsnpCQeofuM0FFXO6v",
+      "iou_fg": 0.8952977301463062
+    },
+    {
+      "image": "433513083_jpg.rf.u9E6buwoRJzUpma3evi4",
+      "iou_fg": 0.8052224886757261
+    },
+    {
+      "image": "443342130_jpg.rf.wIWmRPsrfYUmuMJeJgJ5",
+      "iou_fg": 0.8755661661348981
+    },
+    {
+      "image": "435159701_jpg.rf.TO49sYQRnQPbVkBYR6yi",
+      "iou_fg": 0.8496624703521255
+    },
+    {
+      "image": "453471489_jpg.rf.ueXkYfcgzpVjLC2thRBF",
+      "iou_fg": 0.7711259995677545
+    },
+    {
+      "image": "451264186_jpg.rf.Z2YvD0REPY35013mJTWb",
+      "iou_fg": 0.8153902934120687
+    },
+    {
+      "image": "436905051_jpg.rf.pefzlJB9vY7NqjoSh10y",
+      "iou_fg": 0.880373554699081
+    },
+    {
+      "image": "457854218_jpg.rf.546pmGIQlMRZ9f3hu8jY",
+      "iou_fg": 0.6452316642426761
+    },
+    {
+      "image": "439071097_jpg.rf.BL00BoFBY5LLCbVnP1O8",
+      "iou_fg": 0.9027726952850106
+    },
+    {
+      "image": "456366141_jpg.rf.D677Lba2x389utxTEKWz",
+      "iou_fg": 0.63637607773368
+    },
+    {
+      "image": "454399087_jpg.rf.6ltnsnXKfoYM0AvQapwe",
+      "iou_fg": 0.8588142292490119
+    },
+    {
+      "image": "456369822_jpg.rf.1vYmOBfIATMyo9qNEbO3",
+      "iou_fg": 0.9271112416045804
+    },
+    {
+      "image": "430612843_jpg.rf.0XcrHtXM0l5ROoAkIUXp",
+      "iou_fg": 0.6941597480675638
+    },
+    {
+      "image": "435063142_jpg.rf.dqOAqluZmLPtE6yalqAj",
+      "iou_fg": 0.5498824319785018
+    },
+    {
+      "image": "450876975_jpg.rf.Hxm1y0X37a18tXIpRRfs",
+      "iou_fg": 0.6290309209980933
+    },
+    {
+      "image": "448208663_jpg.rf.svACzVmCF4tv4ARkrden",
+      "iou_fg": 0.8346757538207352
+    },
+    {
+      "image": "452039267_jpg.rf.IhPcBBlG4l7IjUnCczZ0",
+      "iou_fg": 0.8624902521445282
+    },
+    {
+      "image": "447834809_jpg.rf.HU8sFdl1qwGkLodIGEmV",
+      "iou_fg": 0.9291633780584057
+    },
+    {
+      "image": "421974947_jpg.rf.5hTgdYfckKDDkvkrlZW0",
+      "iou_fg": 0.8782615468494431
+    },
+    {
+      "image": "452279479_jpg.rf.78Bh5pzMIcj7iD1UXKoA",
+      "iou_fg": 0.7611318586613042
+    },
+    {
+      "image": "421562523_jpg.rf.LN7bQRCdi7MiOV3wNhTV",
+      "iou_fg": 0.9391858141858141
+    },
+    {
+      "image": "441342527_jpg.rf.mZpykHJTn5ci6vx3kZBk",
+      "iou_fg": 0.6883481516144128
+    },
+    {
+      "image": "439039704_jpg.rf.WMF3CjOIOrnDrfFN9cke",
+      "iou_fg": 0.8890877751259613
+    },
+    {
+      "image": "431944400_jpg.rf.Klqrd4I3k7YDwxPXzqoa",
+      "iou_fg": 0.7852793222133969
+    },
+    {
+      "image": "445823976_jpg.rf.M8d1RLSBgpKryDI0iGEC",
+      "iou_fg": 0.16662165811504187
+    },
+    {
+      "image": "441619202_jpg.rf.JE1WJ5vK4r3TDG7L0toJ",
+      "iou_fg": 0.8492032646715896
+    },
+    {
+      "image": "430657513_jpg.rf.utiKwgX6yMK6zs1ejkbX",
+      "iou_fg": 0.7838904363974002
+    },
+    {
+      "image": "422341026_jpg.rf.4DHsa7vXgQI6K5j9tGai",
+      "iou_fg": 0.7313130175181659
+    },
+    {
+      "image": "431246012_jpg.rf.k91PgilAyJ2tiomotAER",
+      "iou_fg": 0.8089118825100133
+    },
+    {
+      "image": "419641459_jpg.rf.5EAIWz07zTeYeS4qnN8H",
+      "iou_fg": 0.3346684986376656
+    },
+    {
+      "image": "452828227_jpg.rf.0RLCPm9YYAVkE8NotcRY",
+      "iou_fg": 0.9123750960799385
+    },
+    {
+      "image": "430050691_jpg.rf.L4pf91PKIOLGLhDx0g36",
+      "iou_fg": 0.9726772147487279
+    },
+    {
+      "image": "465223629_jpg.rf.kk3fsaPKnOd9LMTjvVit",
+      "iou_fg": 0.8090259159964254
+    },
+    {
+      "image": "433307386_jpg.rf.fnWf4pPlVLaaI2w5raRA",
+      "iou_fg": 0.8081097508031605
+    },
+    {
+      "image": "444191381_jpg.rf.xhf2U2yuIPLR4bQbsKFv",
+      "iou_fg": 0.9580493183640738
+    },
+    {
+      "image": "435855308_jpg.rf.sCKA3VFK4LCldnARfBcL",
+      "iou_fg": 0.7400021443122119
+    },
+    {
+      "image": "438455942_jpg.rf.SiQFqh8bw5QPiDo0O9Ps",
+      "iou_fg": 0.8742945100051308
+    },
+    {
+      "image": "448208669_jpg.rf.7N8qcGSVh7dc6J9ddgTw",
+      "iou_fg": 0.7303030303030303
+    },
+    {
+      "image": "442948316_jpg.rf.yjdPS2zcBpvnUYxOe3b3",
+      "iou_fg": 0.8315341275644058
+    },
+    {
+      "image": "439107414_jpg.rf.8sAICasqgIsr5I4vGadK",
+      "iou_fg": 0.8651036970243463
+    },
+    {
+      "image": "435730961_jpg.rf.sosy3mHUt0KCpZ068Qow",
+      "iou_fg": 0.8945697046681487
+    },
+    {
+      "image": "453485681_jpg.rf.n7HqDFgsUlxmz0HK4cOz",
+      "iou_fg": 0.9211448598130841
+    },
+    {
+      "image": "429639618_jpg.rf.3TqGcLWVaUi5pU9yJB2C",
+      "iou_fg": 0.8057739031013291
+    },
+    {
+      "image": "450822551_jpg.rf.90fqXi6d1PFGiR3j9Ux6",
+      "iou_fg": 0.7880228136882129
+    },
+    {
+      "image": "434483894_jpg.rf.BLjmosyi5CyB0zF2vRGn",
+      "iou_fg": 0.8492786636294609
+    },
+    {
+      "image": "449080965_jpg.rf.UIcV0UiUvRGwineEmF6k",
+      "iou_fg": 0.9461909009812667
+    },
+    {
+      "image": "451552464_jpg.rf.9SSIfE6o2LGZWPKJDMGa",
+      "iou_fg": 0.8698508522727273
+    },
+    {
+      "image": "430925415_jpg.rf.yWbbRhwIoroJRVYFSAzk",
+      "iou_fg": 0.6836592178770949
+    },
+    {
+      "image": "441273726_jpg.rf.8jfzoNL2CIzShVgZPTYL",
+      "iou_fg": 0.8203753351206434
+    },
+    {
+      "image": "438647610_jpg.rf.Thh8eLR4VFHZv5sHymwG",
+      "iou_fg": 0.9544141020083803
+    },
+    {
+      "image": "441267825_jpg.rf.ypAudMkLi5cNfFe2I2iO",
+      "iou_fg": 0.7672230312535007
+    },
+    {
+      "image": "434314484_jpg.rf.M2sIoVzNq34wEXRJZotY",
+      "iou_fg": 0.9295510321928685
+    },
+    {
+      "image": "429448936_jpg.rf.ck3jjNPnXAyqmM0XU0vq",
+      "iou_fg": 0.9741204479322811
+    },
+    {
+      "image": "434493716_jpg.rf.m7cfpm8ObN7qas90oB7p",
+      "iou_fg": 0.8091577438150148
+    },
+    {
+      "image": "435062811_jpg.rf.2R8F74NJYuiV815xQWrQ",
+      "iou_fg": 0.8627501282709081
+    },
+    {
+      "image": "422343545_jpg.rf.D2qf3auuDZ2fFlW1Ezl8",
+      "iou_fg": 0.9540665130062562
+    },
+    {
+      "image": "430657525_jpg.rf.6wqZ16qpTNGx1zPxtpbA",
+      "iou_fg": 0.6221605392851074
+    },
+    {
+      "image": "419896865_jpg.rf.SjXYqspCy0ccVi40Td3r",
+      "iou_fg": 0.9391649860028295
+    },
+    {
+      "image": "431667866_jpg.rf.Bcjf7TxzbwXfBfl5on0e",
+      "iou_fg": 0.9487136883498103
+    },
+    {
+      "image": "445168040_jpg.rf.LhRnpI3FGkPqCmJGwqoi",
+      "iou_fg": 0.8192888455918168
+    },
+    {
+      "image": "440927979_jpg.rf.MzSVxQuMx4707Ai6MIb7",
+      "iou_fg": 0.8497810548006954
+    },
+    {
+      "image": "419241992_jpg.rf.J3kkO3ykUdhOBUqBWM5Y",
+      "iou_fg": 0.8912161216588143
+    },
+    {
+      "image": "433021733_jpg.rf.MYqdSZsJPBVzWbxT8iSB",
+      "iou_fg": 0.9777741010368409
+    },
+    {
+      "image": "429456596_jpg.rf.t218064L9d8wOzX2x30q",
+      "iou_fg": 0.8726243202332231
+    },
+    {
+      "image": "448455043_jpg.rf.qJAvUBqGQSm8ga0triuv",
+      "iou_fg": 0.9101767411831168
+    },
+    {
+      "image": "462775172_jpg.rf.5FxQgpkw02GB6v5ODm6u",
+      "iou_fg": 0.9078261536103021
+    },
+    {
+      "image": "459394211_jpg.rf.8MF4dD9tNIODiqCQFD4Y",
+      "iou_fg": 0.9722479185938946
+    },
+    {
+      "image": "462516759_jpg.rf.pL7mpT7CIahVL4ThSoYi",
+      "iou_fg": 0.875197433965932
+    },
+    {
+      "image": "457099257_jpg.rf.GmRBAfCeHZLRyrML3eTo",
+      "iou_fg": 0.7784066173269482
+    },
+    {
+      "image": "431275055_jpg.rf.lb1ogwozAP64lFkQKZTq",
+      "iou_fg": 0.811125852918878
+    },
+    {
+      "image": "419946836_jpg.rf.6ad7MIHJ9CMxzUqfTt89",
+      "iou_fg": 0.869782480893592
+    },
+    {
+      "image": "460920355_jpg.rf.fr1nStlRwR9GjavErape",
+      "iou_fg": 0.7239709443099274
+    },
+    {
+      "image": "429448788_jpg.rf.9EGCL4AGIhLlFtc6dAVb",
+      "iou_fg": 0.9328796256911952
+    },
+    {
+      "image": "432962815_jpg.rf.kTgJUV8A0X1Eigwe1Gdn",
+      "iou_fg": 0.894116836594103
+    },
+    {
+      "image": "443137996_jpg.rf.RzBNpP7aP4QL14d2ctrQ",
+      "iou_fg": 0.9309034907597535
+    },
+    {
+      "image": "429726323_jpg.rf.YMzYjWxJkFTDOVeHd3yB",
+      "iou_fg": 0.9545695926929
+    },
+    {
+      "image": "420257379_jpg.rf.lTQId3gyjniQxzlwuh9C",
+      "iou_fg": 0.5140380335038464
+    },
+    {
+      "image": "435376401_jpg.rf.ycaUMZasoIRsbY5X2Ezt",
+      "iou_fg": 0.8190414085425497
+    },
+    {
+      "image": "431547104_jpg.rf.ZpgVjkNUjdePA2dsTyR8",
+      "iou_fg": 0.9475777725005937
+    },
+    {
+      "image": "436053273_jpg.rf.8ftmHVIXRVuEgWeXa8ov",
+      "iou_fg": 0.9057112068965517
+    },
+    {
+      "image": "429726237_jpg.rf.q5fPnkfbLxKmJQqhjfgo",
+      "iou_fg": 0.8831945210249862
+    },
+    {
+      "image": "456536873_jpg.rf.zb49M4qzpWDr2i8D4qow",
+      "iou_fg": 0.952907545324607
+    },
+    {
+      "image": "430702666_jpg.rf.hs15WFyPN5dsAd2n4qLH",
+      "iou_fg": 0.9090909090909091
+    },
+    {
+      "image": "451665351_jpg.rf.aN3oTaVM7WZ3q8P48Brf",
+      "iou_fg": 0.5859375
+    },
+    {
+      "image": "465523509_jpg.rf.45u4QfRXef01u9rRXt45",
+      "iou_fg": 0.8640265314085056
+    },
+    {
+      "image": "442115480_jpg.rf.ewfEK04zOGi6eiPuPx9d",
+      "iou_fg": 0.9405559457561187
+    },
+    {
+      "image": "438535461_jpg.rf.kyx2KwMkSZCUOAZOk9Vw",
+      "iou_fg": 0.7104571728849185
+    },
+    {
+      "image": "436451834_jpg.rf.tFBOFBqcVQ9LEX2vasJG",
+      "iou_fg": 0.8760455453024661
+    },
+    {
+      "image": "438160668_jpg.rf.K0ju1BqKQ0uEmiHI0in5",
+      "iou_fg": 0.9659551226616904
+    },
+    {
+      "image": "436614268_jpg.rf.EZjyJLyrZegvhla5JH6W",
+      "iou_fg": 0.7015873015873015
+    },
+    {
+      "image": "435063068_jpg.rf.JCxXx265meGhYFFaw8zE",
+      "iou_fg": 0.6998264893001735
+    },
+    {
+      "image": "438568698_jpg.rf.1LG5PAKDV0tSbEKIQ520",
+      "iou_fg": 0.9319235310764786
+    },
+    {
+      "image": "447573293_jpg.rf.zgFtZpa7TKXsG0ymZPef",
+      "iou_fg": 0.8696710142106288
+    },
+    {
+      "image": "422224250_jpg.rf.Ef96RARmupPYEzF963Yi",
+      "iou_fg": 0.7670652622108933
+    },
+    {
+      "image": "450622446_jpg.rf.3svJILAj2AqM6rd3WY9j",
+      "iou_fg": 0.8255471248510692
+    },
+    {
+      "image": "435855277_jpg.rf.Z5RnoKvrzsFdB5FOpHxn",
+      "iou_fg": 0.7482704009335667
+    },
+    {
+      "image": "432956586_jpg.rf.N3j9uEp3t62lOv9mN44i",
+      "iou_fg": 0.44355586462679647
+    },
+    {
+      "image": "421953380_jpg.rf.sTFQpesEfFxrDU9rU250",
+      "iou_fg": 0.8610043725983835
+    },
+    {
+      "image": "442373626_jpg.rf.jhfaP97QVZjEzgxo5cpD",
+      "iou_fg": 0.6534977837733668
+    },
+    {
+      "image": "453600563_jpg.rf.sMn524zdkrXP5aWRj04n",
+      "iou_fg": 0.7710791117279667
+    },
+    {
+      "image": "430125535_jpg.rf.9W2TwFfu7vOPLMIl8u84",
+      "iou_fg": 0.7465205288796103
+    },
+    {
+      "image": "439040738_jpg.rf.Bjvo9ZakvL1JXyPJ5m6l",
+      "iou_fg": 0.9607245255540892
+    },
+    {
+      "image": "436632489_jpg.rf.AlhQaPjxhxpxuO1CHKXS",
+      "iou_fg": 0.8731228568050136
+    },
+    {
+      "image": "433942872_jpg.rf.BicScPqLjObjDNgdINka",
+      "iou_fg": 0.7236001964636543
+    },
+    {
+      "image": "419673167_jpg.rf.qDfMVh3VcsFX5DLt5jCn",
+      "iou_fg": 0.6054211700120089
+    },
+    {
+      "image": "452756371_jpg.rf.IIKlSzqll3DXYkOrdOCk",
+      "iou_fg": 0.84360625574977
+    },
+    {
+      "image": "421208151_jpg.rf.MZvTrcVKUX3an6QNld5X",
+      "iou_fg": 0.0
+    },
+    {
+      "image": "449169342_jpg.rf.Mw6DZSe1B53krlJhKu7A",
+      "iou_fg": 0.8259450432670411
+    },
+    {
+      "image": "430735212_jpg.rf.U5GLVBCHq98aznQLxPKW",
+      "iou_fg": 0.799612034258107
+    },
+    {
+      "image": "458839017_jpg.rf.OzBNN7Iub4VOrqKkR1XK",
+      "iou_fg": 0.9743406847624922
+    },
+    {
+      "image": "448703684_jpg.rf.FYLmhA905zvNSzKRGrqq",
+      "iou_fg": 0.8872017353579176
+    },
+    {
+      "image": "453486361_jpg.rf.G0QaMSN5GIdEe7FZ0iio",
+      "iou_fg": 0.8860980207351555
+    },
+    {
+      "image": "437887423_jpg.rf.ysqTZuj6K1LqjSLVWVlA",
+      "iou_fg": 0.8980846535824072
+    },
+    {
+      "image": "439639202_jpg.rf.7ZJaMTF8f0U2oaHEVIpS",
+      "iou_fg": 0.9045490822027135
+    },
+    {
+      "image": "433314802_jpg.rf.NZygXau6j4aMySqaR7yk",
+      "iou_fg": 0.8535746606334842
+    },
+    {
+      "image": "419316472_jpg.rf.PHxFTrEHr4naEx2vWZNh",
+      "iou_fg": 0.9568717653824037
+    },
+    {
+      "image": "434432473_jpg.rf.6hq10J9pyQXH6Lhd7XUr",
+      "iou_fg": 0.7245604688332445
+    }
+  ]
+}

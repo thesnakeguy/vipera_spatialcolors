@@ -1,0 +1,95 @@
+{
+  "run_id": "20260606-161510-seed3-a45b65a",
+  "status": "done",
+  "created": "2026-06-06T16:15:12",
+  "command": "python train.py --seed 3 --run-id 20260606-161510-seed3-a45b65a --out runs_noisystudent_stage1/effb0_unetpp_strong --epochs1 100 --epochs2 50 --max-batches 0 --bs 16 --lr1 0.001 --lr2 2e-05 --patience 12 --loss dicebce --aug strong --sched plateau --arch unetpp --weights noisy-student --stage1-only",
+  "seed": 3,
+  "hyperparams": {
+    "epochs1": 100,
+    "epochs2": 50,
+    "bs": 16,
+    "lr1": 0.001,
+    "lr2": 2e-05,
+    "patience": 12,
+    "size": 512,
+    "amp": true,
+    "max_batches": 0,
+    "loss": "dicebce",
+    "aug": "strong",
+    "sched": "plateau",
+    "arch": "unetpp",
+    "weights": "noisy-student",
+    "stage1_only": true
+  },
+  "model": {
+    "arch": "UnetPlusPlus (nested dense skip connections) (segmentation-models-pytorch)",
+    "encoder": "timm-efficientnet-b0",
+    "encoder_weights": "noisy-student",
+    "classes": 1,
+    "activation": "sigmoid",
+    "params_total_M": 6.57,
+    "params_total": 6569581
+  },
+  "loss": "0.5*Dice + 0.5*BCEWithLogits",
+  "schedule": "stage1 only: encoder frozen (lr1, decoder only); early stopping + best checkpoint on val iou_fg",
+  "augmentations": {
+    "mode": "strong",
+    "applies_to": "train split only (val/test deterministic)",
+    "hflip_p": 0.5,
+    "vflip_p": 0.5,
+    "note": "geometry synced on image+mask; photometric on image only; letterbox + ImageNet normalization applied to all splits",
+    "rotation_deg": [
+      -30,
+      30
+    ],
+    "brightness_factor": [
+      0.4,
+      1.6
+    ],
+    "contrast_factor": [
+      0.4,
+      1.6
+    ],
+    "zoom_factor": [
+      0.8,
+      1.2
+    ],
+    "saturation_factor": [
+      0.6,
+      1.4
+    ],
+    "hue_shift_p": 0.3,
+    "blur_p": 0.3
+  },
+  "data": {
+    "root": "data.DATA_ROOT",
+    "split_proportions": "70/15/15",
+    "seed": 3,
+    "n_train": 605,
+    "n_val": 129,
+    "n_test": 131
+  },
+  "env": {
+    "python": "3.14.4",
+    "torch": "2.12.0+cu126",
+    "segmentation_models_pytorch": "0.5.0",
+    "timm": "1.0.27",
+    "numpy": "2.4.6",
+    "device": "cuda"
+  },
+  "git": {
+    "commit": "a45b65a",
+    "dirty": true
+  },
+  "finished": "2026-06-06T16:27:50",
+  "duration_sec": 757.4,
+  "epochs_run": 61,
+  "result_val_best": {
+    "iou_fg": 0.8509750712946367,
+    "leakage": 0.09436391678145717,
+    "boundary_iou": 0.730770488233527,
+    "iou_mean": 0.9201753788427774,
+    "stage": "stage1",
+    "epoch": 48
+  }
+}
