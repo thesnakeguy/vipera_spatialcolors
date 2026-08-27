@@ -8,7 +8,7 @@ library(dplyr)
 library(png)
 
 # --- Set working dir where images are --- ####
-img_dir <- "C:/Users/pdeschepper/Desktop/PERSONAL/DeepLearning/ImageSegmentation/Snakes_ImageSegmentation_keras/Vipera_segmentation_test_dataset/Extracted_snakes/"
+img_dir <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Gbif_sourceimages/Extracted_snakes_pytorch"
 images <- list.files(img_dir, pattern = "*.png$", full.names = TRUE)
 # Creat directory for standardized images
 std <- paste0(img_dir, "/Standardized")
@@ -77,7 +77,7 @@ standardize_L_channel <- function(img_path, target_mean, target_sd) {
     }
     
     # 10. Save the final image
-    standardized_file <- img_path %>% str_replace("(Extracted_snakes/)", "\\1Standardized/")
+    standardized_file <- paste0(std, "/", basename(img_path))
     save.image(final_img_rgba, file = file.path(standardized_file))
     
     return(standardized_file)
@@ -92,7 +92,7 @@ standardize_L_channel <- function(img_path, target_mean, target_sd) {
 
 # --- Run the standardization step with the revised function --- ####
 cat("Standardizing L* channel across images with error handling...\n")
-standardized_images <- lapply(images, standardize_L_channel, 
+standardized_images <- lapply(images[1:20], standardize_L_channel, 
                               target_mean = TARGET_L_MEAN, 
                               target_sd = TARGET_L_SD)
 cat("Standardization pass complete. Check console for warnings about skipped images.\n")
@@ -125,10 +125,10 @@ compare_visual_base_r_simple <- function(original_path, standardized_path) {
   par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1) 
 }
 
-compare_visual_base_r_simple(images[7], standardized_images[[7]])
+compare_visual_base_r_simple(images[12], standardized_images[[12]])
 
 # Check histogram of CIELAB image L channel
-img <- imager::load.image(standardized_images[[1]])
+img <- imager::load.image(standardized_images[[5]])
 img_rgb <- imager::channel(img, 1:3)
 img_lab <- RGBtoLab(img_rgb)
 L_channel <- channel(img_lab, 1) 
@@ -136,12 +136,12 @@ hist(L_channel, breaks = 100)
 
 # ---- Kmeans color clustering for a single image ---- ####
 # Use the first standardized image path
-clust <- colordistance::getKMeanColors(standardized_images[[9]], n = 3, sample.size = 10000,
+clust <- colordistance::getKMeanColors(standardized_images[[5]], n = 3, sample.size = 10000,
                                        color.space = "lab", ref.white = "D65")
 
 # ---- Analyze all images to plot distance matrix ---- ####
 # Use the standardized image paths
-lab_hist_list <- getLabHistList(standardized_images, bins = 2, sample.size = 10000,
+lab_hist_list <- getLabHistList(unlist(standardized_images), bins = 2, sample.size = 10000,
                                 ref.white = "D65", lower = rep(0.8, 3), upper = rep(1, 3),
                                 plotting = FALSE, pausing = FALSE)
 
