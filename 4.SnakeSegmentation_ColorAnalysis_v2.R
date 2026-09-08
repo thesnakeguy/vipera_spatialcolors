@@ -18,7 +18,7 @@ if (!dir.exists(out_dir)) dir.create(out_dir)
 
 # Optional QC step: write out the standardized PNGs so you can visually
 # inspect the correction. Off by default -- not needed for the CSV output.
-SAVE_STANDARDIZED_IMAGES <- FALSE
+SAVE_STANDARDIZED_IMAGES <- TRUE
 if (SAVE_STANDARDIZED_IMAGES) {
   std_dir <- file.path(img_dir, "Standardized")
   if (!dir.exists(std_dir)) dir.create(std_dir)
@@ -102,7 +102,7 @@ standardize_L_channel <- function(img_path, target_mean, target_sd = NULL,
 }
 
 # --- 4. Clustering function (k = 2, on standardized Lab pixels) --- ####
-SAMPLE_SIZE    <- 10000
+SAMPLE_SIZE    <- 5000
 N_CLUSTERS     <- 2
 KMEANS_NSTART  <- 10   # multiple random starts to avoid a bad local optimum
 
@@ -225,4 +225,7 @@ compare_standardization <- function(img_path) {
 }
 
 # Usage:
-compare_standardization(images[8])
+lapply(X = images[400:410], FUN = compare_standardization)
+compare_standardization(images[4000])
+
+

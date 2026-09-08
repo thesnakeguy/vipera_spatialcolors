@@ -39,13 +39,13 @@ gbif_long <- gbif %>%
   mutate(photo_id_list = stringr::str_extract_all(photo_ids, "'([^']+)'")) %>%
   tidyr::unnest(photo_id_list) %>%
   mutate(photo_id = stringr::str_remove_all(photo_id_list, "'")) %>%
-  select(gbif_id, latitude, longitude, observation_date, photo_id) %>%
+  dplyr::select(gbif_id, latitude, longitude, observation_date, photo_id) %>%
   distinct()
 
 # --- 4. Clean class coverage: strip file extension to match photo_id --- ####
 coverage_clean <- coverage %>%
   mutate(photo_id = stringr::str_remove(photo_ID, "\\.[A-Za-z]+$")) %>%
-  select(photo_id, class_coverage)
+  dplyr::select(photo_id, class_coverage)
 
 # --- 5. Pivot color clusters to one row per photo --- ####
 # Keep L, a, b (not hex) per rank -- we need Lab coordinates to average
@@ -56,7 +56,7 @@ colors_wide <- colors %>%
   mutate(color_rank = row_number()) %>%
   ungroup() %>%
   filter(color_rank <= 2) %>%
-  select(photo_id, color_rank, proportion, L, a, b) %>%
+  dplyr::select(photo_id, color_rank, proportion, L, a, b) %>%
   tidyr::pivot_wider(
     names_from = color_rank,
     values_from = c(proportion, L, a, b),
@@ -77,6 +77,9 @@ if (nrow(unmatched_coverage) > 0) {
 if (nrow(unmatched_gbif) > 0) {
   cat(nrow(unmatched_gbif), "photo_id(s) had no match in GBIF metadata\n")
 }
+
+# Filter our class coverage lower than threshold
+photo_level <- photo_level %>% filter(class_coverage > COVERAGE_THRESHOLD)
 
 # --- 7. Aggregate to one row per GBIF observation --- ####
 # Colors are averaged in CIELab space (perceptually meaningful, consistent
@@ -193,7 +196,7 @@ snake_map <- leaflet(map_data) %>%
     icon = pie_icons,
     options = markerOptions(riseOnHover = TRUE),
     clusterOptions = markerClusterOptions(spiderfyOnMaxZoom = TRUE,
-                                          maxClusterRadius = 30,
+                                          maxClusterRadius = 80,
                                           disableClusteringAtZoom = 9
                                           ),
     popup = ~sprintf(
