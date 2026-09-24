@@ -8,7 +8,7 @@ library(imager)
 library(dplyr)
 
 # --- 2. File system set up --- ####
-img_dir <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Gbif_sourceimages/Extracted_snakes_pytorch"
+img_dir <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Vipera_berus_gbif_sourceimages/Extracted_snakes_pytorch"
 
 images <- list.files(img_dir, pattern = "\\.png$", ignore.case = TRUE, full.names = TRUE)
 stopifnot(length(images) > 0)
@@ -18,7 +18,7 @@ if (!dir.exists(out_dir)) dir.create(out_dir)
 
 # Optional QC step: write out the standardized PNGs so you can visually
 # inspect the correction. Off by default -- not needed for the CSV output.
-SAVE_STANDARDIZED_IMAGES <- TRUE
+SAVE_STANDARDIZED_IMAGES <- FALSE
 if (SAVE_STANDARDIZED_IMAGES) {
   std_dir <- file.path(img_dir, "Standardized")
   if (!dir.exists(std_dir)) dir.create(std_dir)
@@ -201,7 +201,7 @@ cat(sprintf(
   "\nDone. Processed %d/%d images successfully. Results written to:\n%s\n",
   nrow(results_df) / N_CLUSTERS, length(images),
   file.path(out_dir, "snake_color_clusters.csv")
-))
+)) 
 
 
 # --- 6. Exploration of output --- ####

@@ -1,0 +1,2 @@
+4440985133_1.png: Fewer than 50 snake pixels -- check the crop.
+5008739332_1.png: Fewer than 50 snake pixels -- check the crop.

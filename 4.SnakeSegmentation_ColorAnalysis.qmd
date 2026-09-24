@@ -1,0 +1,598 @@
+---
+title: "Snake colour extraction — pipeline v3"
+subtitle: "Chapter 3 (4) — background-referenced illuminant/exposure correction and k-means colour clustering"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+    fig-width: 8
+    fig-height: 4
+    df-print: paged
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+---
+
+## Overview
+
+This document extracts, for every segmented snake photo, a **two-colour
+summary** (the dorsal background colour and the darker zigzag colour) that is
+comparable across photos taken under different illumination.
+
+### What changed relative to v2
+
+v2 only shifted the `L*` channel (exposure), leaving the colour cast (white
+balance) in `a*`/`b*` untouched. v3 instead:
+
+1. estimates the **scene illuminant** from the *background* pixels of the
+   original GBIF photo (the mask is paired by filename, one directory up);
+2. performs diagonal (**von Kries**) chromatic adaptation toward a neutral,
+   D65-like reference;
+3. normalises **exposure** to the scene's brightest non-saturated background
+   pixels.
+
+`a*`/`b*` values are therefore comparable across photos, while genuine snake
+lightness variation is preserved (no forced `L*` target).
+
+> **Relative, not absolute.** GBIF photos contain no in-image grey standard, so
+> true reflectance is unrecoverable (Stevens et al. 2007; Troscianko & Stevens
+> 2015). Metadata for every correction (WB gains, exposure gain, residual cast)
+> is exported so downstream models (step 6) can absorb residual technical noise
+> statistically.
+
+The pipeline is deliberately **deterministic**: every stochastic step (background
+subsampling, k-means subsampling and `nstart` restarts) is seeded from a hash of
+the photo id, so re-running produces identical outputs.
+
+------------------------------------------------------------------------
+
+## 1. Libraries and parallel setup
+
+```{r}
+#| label: setup
+#| message: false
+
+library(imager)       # image IO and RGB <-> Lab conversion
+library(dplyr)        # data wrangling
+library(parallel)     # cluster creation
+library(doParallel)   # cross-platform backend (PSOCK on Windows, fork on Linux)
+library(foreach)      # explicit, so %dopar% is available even if not re-exported
+
+# Leave headroom for the OS/UI: use (available cores - 2).
+N_CORES <- max(1, parallel::detectCores() - 2)
+```
+
+## 2. File-system setup
+
+Segmented snake crops (`*.png`, with alpha) live in `img_dir`; the matching
+original GBIF photos (`*.jpg`) live one directory up and are used only to
+estimate the background illuminant.
+
+```{r}
+#| label: paths
+
+img_dir  <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Vipera_latastei_gbif_sourceimages/Extracted_snakes_pytorch"
+orig_dir <- dirname(img_dir)   # background photos live one level up
+
+images <- list.files(img_dir, pattern = "\\.png$", ignore.case = TRUE, full.names = TRUE)
+stopifnot(length(images) > 0)
+
+out_dir <- file.path(img_dir, "ColorExtraction_results_v3")
+if (!dir.exists(out_dir)) dir.create(out_dir)
+
+# Optional QC step: write out the corrected PNGs (snake + transparency
+# preserved) so the correction can be inspected visually. Off by default
+# because it doubles the disk footprint.
+SAVE_CORRECTED_IMAGES <- FALSE
+corr_dir <- NULL
+if (SAVE_CORRECTED_IMAGES) {
+  corr_dir <- file.path(img_dir, "Corrected")
+  if (!dir.exists(corr_dir)) dir.create(corr_dir)
+}
+```
+
+## 3. Correction parameters
+
+These defaults are the analysis configuration; they are collected in one place
+so the whole correction can be reproduced or sensitivity-tested.
+
+```{r}
+#| label: parameters
+
+## ---- Illuminant estimation (Shades-of-Grey) ----------------------------- ##
+SOG_P       <- 6      # p-norm exponent; Grey-World is p = 1, p = 6 is robust
+                      # (Finlayson & Trezzi)
+WP_WEIGHT   <- 0.30   # blend weight of the White-Patch estimate (rest -> Shades-of-Grey)
+WP_QUANTILE <- 0.995  # "white" reference quantile within the background
+
+## ---- Background quality filters ----------------------------------------- ##
+BG_SAT_CUT    <- 0.98   # drop background pixels clipped in any channel
+BG_BLACK_CUT  <- 0.02   # drop near-black pixels (sensor noise dominates)
+BG_SAMPLE_MAX <- 20000  # background pixels subsampled per photo
+BG_MIN_PIXELS <- 500    # minimum usable background pixels, else the image is skipped
+
+## ---- Gain guard rails --------------------------------------------------- ##
+# Avoid over-correcting atypical photos: clamp the gains and flag the photo
+# instead of letting a bad estimate distort the colour data.
+MIN_GAIN     <- 0.5
+MAX_GAIN     <- 2.0
+MIN_EXP_GAIN <- 0.2
+MAX_EXP_GAIN <- 5.0
+
+# Exposure normalisation: map the scene's brightest neutral background pixels
+# (its strongest white reference) to this linear white level.
+BG_WHITE_TARGET_LIN <- 0.92
+
+## ---- Clustering (unchanged from v2) ------------------------------------- ##
+SAMPLE_SIZE   <- 5000
+N_CLUSTERS    <- 2
+KMEANS_NSTART <- 10
+```
+
+## 4. Colour-conversion helpers
+
+JPEG pixel values are gamma-encoded; von Kries diagonal adaptation is only
+valid (approximately, for gamma-on images — Cardei & Funt 1999) in a linear
+response space. These helpers convert between sRGB and linear light.
+
+```{r}
+#| label: colour-helpers
+
+srgb_to_linear <- function(v) {
+  ifelse(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ^ 2.4)
+}
+
+linear_to_srgb <- function(v) {
+  ifelse(v <= 0.0031308, v * 12.92, 1.055 * v ^ (1 / 2.4) - 0.055)
+}
+
+# Shades-of-Grey channel statistic.
+sog_stat <- function(x, p = SOG_P) {
+  mean(x ^ p, na.rm = TRUE) ^ (1 / p)
+}
+```
+
+## 5. Estimating the background correction
+
+`estimate_background_correction()` works on the **original** photo. It:
+
+1. takes the complement of the snake mask as background and subsamples it;
+2. discards clipped and near-black pixels (no usable sensor response);
+3. blends a **Shades-of-Grey** and a **White-Patch** illuminant estimate;
+4. converts that estimate to per-channel von Kries gains, clamped to the guard
+   rails;
+5. derives a single exposure gain that maps the corrected background's white
+   reference to `BG_WHITE_TARGET_LIN`.
+
+It returns the gains plus QC metadata (saturation fraction, clamp flags, pixel
+count) and the linearised background samples used later for the residual-cast
+check.
+
+```{r}
+#| label: estimate-correction
+
+estimate_background_correction <- function(orig, mask, seed) {
+
+  set.seed(seed)
+
+  orig_r <- as.vector(imager::channel(orig, 1))
+  orig_g <- as.vector(imager::channel(orig, 2))
+  orig_b <- as.vector(imager::channel(orig, 3))
+
+  # Background = complement of the snake mask; subsample for speed.
+  bg_idx <- which(!mask)
+  if (length(bg_idx) < BG_MIN_PIXELS) {
+    stop("Too little background for illuminant estimation.")
+  }
+  if (length(bg_idx) > BG_SAMPLE_MAX) {
+    bg_idx <- bg_idx[sample.int(length(bg_idx), BG_SAMPLE_MAX)]
+  }
+
+  # Remove clipped and near-black pixels (no usable sensor response).
+  enc_max <- pmax(orig_r[bg_idx], orig_g[bg_idx], orig_b[bg_idx])
+  enc_min <- pmin(orig_r[bg_idx], orig_g[bg_idx], orig_b[bg_idx])
+  usable  <- enc_max < BG_SAT_CUT & enc_min > BG_BLACK_CUT
+  saturated_frac <- 1 - mean(usable)
+
+  bg_idx <- bg_idx[usable]
+  if (length(bg_idx) < BG_MIN_PIXELS) {
+    stop("Too few usable background pixels after saturation/black filtering.")
+  }
+
+  r_lin <- srgb_to_linear(orig_r[bg_idx])
+  g_lin <- srgb_to_linear(orig_g[bg_idx])
+  b_lin <- srgb_to_linear(orig_b[bg_idx])
+
+  # Illuminant estimate = weighted blend of Shades-of-Grey and White-Patch.
+  sog_r <- sog_stat(r_lin); sog_g <- sog_stat(g_lin); sog_b <- sog_stat(b_lin)
+  wp_r  <- stats::quantile(r_lin, probs = WP_QUANTILE, names = FALSE)
+  wp_g  <- stats::quantile(g_lin, probs = WP_QUANTILE, names = FALSE)
+  wp_b  <- stats::quantile(b_lin, probs = WP_QUANTILE, names = FALSE)
+
+  est_r <- (1 - WP_WEIGHT) * sog_r + WP_WEIGHT * wp_r
+  est_g <- (1 - WP_WEIGHT) * sog_g + WP_WEIGHT * wp_g
+  est_b <- (1 - WP_WEIGHT) * sog_b + WP_WEIGHT * wp_b
+  est   <- c(est_r, est_g, est_b)
+
+  if (any(!is.finite(est)) || any(est <= 0)) {
+    stop("Illuminant estimate is not finite/positive.")
+  }
+
+  # von Kries gains: scale channels so the estimated illuminant becomes neutral.
+  neutral    <- mean(est)
+  gains_raw  <- neutral / est
+  gains      <- pmin(pmax(gains_raw, MIN_GAIN), MAX_GAIN)
+  wb_clamped <- any(gains != gains_raw)
+
+  # Exposure: white reference of the *corrected* background luminance.
+  lum <- 0.2126 * (r_lin * gains[1]) + 0.7152 * (g_lin * gains[2]) + 0.0722 * (b_lin * gains[3])
+  white_bg <- stats::quantile(lum, probs = WP_QUANTILE, names = FALSE)
+  if (!is.finite(white_bg) || white_bg <= 0) {
+    stop("Background white reference not usable.")
+  }
+
+  exp_gain_raw <- BG_WHITE_TARGET_LIN / white_bg
+  exp_gain     <- pmin(pmax(exp_gain_raw, MIN_EXP_GAIN), MAX_EXP_GAIN)
+  exp_clamped  <- !identical(exp_gain, exp_gain_raw)
+
+  list(
+    gains          = gains,
+    exposure_gain  = exp_gain,
+    saturated_frac = saturated_frac,
+    wb_clamped     = wb_clamped,
+    exp_clamped    = exp_clamped,
+    n_bg_pixels    = length(bg_idx),
+    bg_r = r_lin, bg_g = g_lin, bg_b = b_lin   # linearised, usable samples
+  )
+}
+```
+
+## 6. Applying the correction to the snake crop
+
+The WB gains and the exposure gain are combined and applied in linear space;
+the result is converted back to sRGB and to Lab for clustering.
+
+```{r}
+#| label: correct-crop
+
+correct_crop <- function(img_crop, correction) {
+
+  w  <- dim(img_crop)[1]
+  h  <- dim(img_crop)[2]
+  ch <- function(k) imager::channel(img_crop, k)
+
+  g_r <- correction$gains[1] * correction$exposure_gain
+  g_g <- correction$gains[2] * correction$exposure_gain
+  g_b <- correction$gains[3] * correction$exposure_gain
+
+  corr <- function(k, gain) {
+    linear_to_srgb(pmin(pmax(srgb_to_linear(as.vector(k)) * gain, 0), 1))
+  }
+
+  new_r <- corr(ch(1), g_r)
+  new_g <- corr(ch(2), g_g)
+  new_b <- corr(ch(3), g_b)
+
+  img_rgb <- imager::imappend(list(
+    imager::as.cimg(new_r, dim = c(w, h, 1, 1)),
+    imager::as.cimg(new_g, dim = c(w, h, 1, 1)),
+    imager::as.cimg(new_b, dim = c(w, h, 1, 1))
+  ), "c")
+
+  list(
+    rgb = img_rgb,
+    lab = imager::RGBtoLab(img_rgb)
+  )
+}
+
+# Residual cast of the corrected background samples in Lab. Values near 0 mean
+# the neutral-background assumption holds; large values flag problem photos.
+background_residual_cast <- function(correction) {
+  r <- linear_to_srgb(pmin(pmax(correction$bg_r * correction$gains[1] * correction$exposure_gain, 0), 1))
+  g <- linear_to_srgb(pmin(pmax(correction$bg_g * correction$gains[2] * correction$exposure_gain, 0), 1))
+  b <- linear_to_srgb(pmin(pmax(correction$bg_b * correction$gains[3] * correction$exposure_gain, 0), 1))
+
+  n <- length(r)
+  bg_lab <- imager::RGBtoLab(imager::as.cimg(array(c(r, g, b), dim = c(n, 1, 1, 3))))
+  a    <- stats::median(as.vector(imager::channel(bg_lab, 2)), na.rm = TRUE)
+  bmed <- stats::median(as.vector(imager::channel(bg_lab, 3)), na.rm = TRUE)
+
+  data.frame(residual_a = a, residual_b = bmed,
+             residual_euclid = sqrt(a ^ 2 + bmed ^ 2))
+}
+```
+
+## 7. Clustering into two colour zones
+
+k-means on the corrected Lab pixels, masked to snake-only pixels and subsampled
+for speed. Cluster ids are assigned by lightness `L*`, **not** by size:
+cluster 1 = lighter (dorsal background), cluster 2 = darker (zigzag). This keeps
+labels comparable across images regardless of which colour covers more area.
+
+The per-photo `seed` is passed in so both the subsample and the k-means
+restarts are reproducible.
+
+```{r}
+#| label: clustering
+
+extract_lab_clusters <- function(std_result, n = N_CLUSTERS,
+                                 sample.size = SAMPLE_SIZE,
+                                 nstart = KMEANS_NSTART,
+                                 seed = 1L) {
+
+  lab_img <- std_result$lab
+  mask    <- std_result$mask
+
+  L <- as.vector(imager::channel(lab_img, 1))[mask]
+  a <- as.vector(imager::channel(lab_img, 2))[mask]
+  b <- as.vector(imager::channel(lab_img, 3))[mask]
+
+  lab_matrix <- cbind(L, a, b)
+  lab_matrix <- lab_matrix[stats::complete.cases(lab_matrix), , drop = FALSE]
+
+  if (nrow(lab_matrix) < n) {
+    stop("Not enough valid pixels to cluster.")
+  }
+
+  # Deterministic subsampling / initialisation (was set.seed(NULL), which made
+  # the result irreproducible; now keyed to the photo id).
+  set.seed(seed)
+  if (nrow(lab_matrix) > sample.size) {
+    lab_matrix <- lab_matrix[sample.int(nrow(lab_matrix), sample.size), ]
+  }
+
+  km <- stats::kmeans(lab_matrix, centers = n, nstart = nstart, iter.max = 50)
+
+  # Order cluster ids from lightest (cluster 1, background) to darkest
+  # (cluster 2, zigzag): lightest dorsal colour always has highest L*.
+  ord <- order(km$centers[, 1], decreasing = TRUE)
+
+  sizes   <- km$size / sum(km$size)
+  centers <- km$centers[ord, , drop = FALSE]
+  sizes   <- sizes[ord]
+
+  rgb_vals <- grDevices::convertColor(centers, from = "Lab", to = "sRGB", clip = TRUE)
+  rgb_vals[rgb_vals < 0] <- 0
+  rgb_vals[rgb_vals > 1] <- 1
+  hex <- grDevices::rgb(rgb_vals[, 1], rgb_vals[, 2], rgb_vals[, 3])
+
+  data.frame(
+    cluster    = seq_len(n),
+    proportion = sizes,
+    L = centers[, 1],
+    a = centers[, 2],
+    b = centers[, 3],
+    hex = hex,
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+## 8. Per-image pipeline
+
+`process_one_image()` ties the steps together for a single crop: load the crop
+and its original, build the mask from alpha, estimate and apply the correction,
+compute the residual cast, optionally save the corrected image, and cluster the
+Lab pixels. A stable per-photo seed is derived from a hash of the photo id.
+
+```{r}
+#| label: process-one
+
+process_one_image <- function(png_path) {
+
+  photo_id <- tools::file_path_sans_ext(basename(png_path))
+  jpg_path <- file.path(orig_dir, paste0(photo_id, ".jpg"))
+  seed <- sum(utf8ToInt(photo_id)) %% 999983L   # deterministic subsampling per photo
+
+  img_crop <- imager::load.image(png_path)
+  has_alpha <- dim(img_crop)[4] == 4
+  if (!has_alpha) stop("Cropped PNG has no alpha channel.")
+
+  alpha <- imager::channel(img_crop, 4)
+  mask  <- as.vector(alpha) > 0.5
+  if (sum(mask) < 50) stop("Fewer than 50 snake pixels -- check the crop.")
+
+  if (!file.exists(jpg_path)) stop("Original JPG not found for this photo.")
+  img_orig <- imager::load.image(jpg_path)
+  if (!identical(dim(img_crop)[1:2], dim(img_orig)[1:2])) {
+    stop("Dimension mismatch between crop and original.")
+  }
+
+  correction <- estimate_background_correction(img_orig, mask, seed)
+  corrected  <- correct_crop(img_crop, correction)
+  residual   <- background_residual_cast(correction)
+
+  if (SAVE_CORRECTED_IMAGES) {
+    corrected_with_alpha <- imager::imappend(list(corrected$rgb, alpha), "c")
+    imager::save.image(corrected_with_alpha, file.path(corr_dir, basename(png_path)))
+  }
+
+  std_result <- list(
+    lab = corrected$lab,
+    mask = mask,
+    has_alpha = has_alpha
+  )
+
+  clust_df <- extract_lab_clusters(std_result, seed = seed)
+  clust_df$photo_id <- photo_id
+  clust_df$file     <- basename(png_path)
+
+  meta <- data.frame(
+    photo_id        = photo_id,
+    wb_gain_r       = correction$gains[1],
+    wb_gain_g       = correction$gains[2],
+    wb_gain_b       = correction$gains[3],
+    exposure_gain   = correction$exposure_gain,
+    saturated_frac  = correction$saturated_frac,
+    wb_clamped      = correction$wb_clamped,
+    exp_clamped     = correction$exp_clamped,
+    n_bg_pixels     = correction$n_bg_pixels,
+    residual_a      = residual$residual_a,
+    residual_b      = residual$residual_b,
+    residual_euclid = residual$residual_euclid,
+    stringsAsFactors = FALSE
+  )
+
+  list(clusters = clust_df, meta = meta)
+}
+```
+
+## 9. Batch run over all images
+
+The run is parallelised with `doParallel`. Because PSOCK workers start with an
+empty workspace, every function and constant a worker needs is exported
+explicitly via `.export`; `.packages` loads `imager` on each worker.
+
+The cluster is stopped in a `finally` block so it cannot leak into the rest of
+the session (important because Quarto keeps one R session for the whole
+document).
+
+```{r}
+#| label: batch-run
+#| message: false
+
+cat(sprintf("Processing %d images on %d cores...\n", length(images), N_CORES))
+
+# Per-job wrapper returning either a result or an error tag, so one bad image
+# cannot abort the whole batch.
+wrapper <- function(png_path) {
+  tryCatch(
+    process_one_image(png_path),
+    error = function(e) list(error = sprintf("%s: %s", basename(png_path), conditionMessage(e)))
+  )
+}
+
+# Everything the workers need (functions + constants), exported explicitly.
+NEEDED_FOR_PARALLEL <- c(
+  "wrapper", "process_one_image",
+  "estimate_background_correction", "correct_crop",
+  "background_residual_cast", "extract_lab_clusters",
+  "srgb_to_linear", "linear_to_srgb", "sog_stat",
+  "orig_dir", "SAVE_CORRECTED_IMAGES", "corr_dir",
+  "N_CLUSTERS", "KMEANS_NSTART", "SAMPLE_SIZE",
+  "BG_MIN_PIXELS", "BG_SAMPLE_MAX", "BG_SAT_CUT", "BG_BLACK_CUT",
+  "WP_QUANTILE", "WP_WEIGHT", "SOG_P",
+  "MIN_GAIN", "MAX_GAIN", "MIN_EXP_GAIN", "MAX_EXP_GAIN",
+  "BG_WHITE_TARGET_LIN"
+)
+
+cl <- parallel::makeCluster(N_CORES, type = "PSOCK")
+doParallel::registerDoParallel(cl)
+
+t0 <- proc.time()
+
+results <- tryCatch(
+  foreach::foreach(
+    png_path = images,
+    .packages = "imager",
+    .export = NEEDED_FOR_PARALLEL
+  ) %dopar% {
+    wrapper(png_path)
+  },
+  finally = {
+    # Always release the workers and reset the foreach backend.
+    parallel::stopCluster(cl)
+    foreach::registerDoSEQ()
+  }
+)
+
+cat(sprintf("Elapsed: %.1f min\n", (proc.time() - t0)["elapsed"] / 60))
+```
+
+```{r}
+#| label: batch-outputs
+#| message: false
+
+is_error <- vapply(results, function(r) !is.null(r$error), logical(1))
+good     <- results[!is_error]
+failed   <- vapply(results[is_error], function(r) r$error, character(1))
+
+clusters_df <- dplyr::bind_rows(lapply(good, function(r) r$clusters)) %>%
+  dplyr::select(photo_id, file, cluster, proportion, L, a, b, hex)
+
+meta_df <- dplyr::bind_rows(lapply(good, function(r) r$meta))
+
+# Per-cluster CSV (response data) plus per-photo correction CSV (covariates).
+write.csv(clusters_df, file.path(out_dir, "snake_color_clusters_v3.csv"), row.names = FALSE)
+write.csv(meta_df,     file.path(out_dir, "correction_metadata.csv"),    row.names = FALSE)
+
+if (length(failed) > 0) {
+  cat("\nThe following images failed and were skipped:\n")
+  print(failed)
+  writeLines(failed, file.path(out_dir, "failed_images_v3.txt"))
+}
+
+cat(sprintf(
+  "\nDone. Processed %d/%d images successfully. Results written to:\n%s\n",
+  length(good), length(images), out_dir
+))
+```
+
+## 10. QC summary and visual inspection
+
+The summaries below check that the correction did not run away: gains should sit
+inside the guard rails, and the corrected background residual cast (`a*`, `b*`)
+should centre near 0.
+
+```{r}
+#| label: qc-summary
+
+cat("\nCorrection gain distribution (all photos):\n")
+print(summary(meta_df[, c("wb_gain_r", "wb_gain_g", "wb_gain_b", "exposure_gain")]))
+
+cat("\nBackground residual cast (a*, b*): should centre near 0\n")
+print(summary(meta_df[, c("residual_a", "residual_b")]))
+
+cat(sprintf("\nImages with clamped WB gains or exposure: %.1f%%\n",
+            100 * mean(meta_df$wb_clamped | meta_df$exp_clamped)))
+```
+
+### Side-by-side inspection
+
+`compare_correction()` renders the original crop next to the corrected crop for
+one photo. This chunk is **not executed on render** — set `eval: true` (or run
+it interactively) to inspect specific photos.
+
+```{r}
+#| label: compare-correction
+#| eval: false
+
+compare_correction <- function(png_path) {
+  original <- imager::load.image(png_path)
+  alpha    <- imager::channel(original, 4)
+  jpg_path <- file.path(orig_dir, paste0(tools::file_path_sans_ext(basename(png_path)), ".jpg"))
+
+  seed <- sum(utf8ToInt(tools::file_path_sans_ext(basename(png_path)))) %% 999983L
+  correction <- estimate_background_correction(imager::load.image(jpg_path),
+                                               as.vector(alpha) > 0.5, seed)
+  corrected_img_rgb <- correct_crop(original, correction)$rgb
+  corrected <- imager::imappend(list(corrected_img_rgb, alpha), "c")
+
+  old_par <- par(mfrow = c(1, 2), mar = c(1, 1, 2, 1))
+  plot(original,  axes = FALSE, main = "Original")
+  plot(corrected, axes = FALSE, main = "Corrected")
+  par(old_par)
+}
+
+# Example inspections:
+# lapply(images[500:510], compare_correction)
+compare_correction(images[14])
+```
+
+```{r}
+#| label: files-written
+
+list.files(out_dir)
+```
+
+```{r}
+#| label: session-info
+#| echo: false
+
+sessionInfo()
+```

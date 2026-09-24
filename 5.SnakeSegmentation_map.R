@@ -14,10 +14,10 @@ library(base64enc)
 library(purrr)
 
 # --- 2. File paths -- ####
-basedir <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Gbif_sourceimages/"
-color_csv    <- paste0(basedir,"Extracted_snakes_pytorch/ColorExtraction_results/snake_color_clusters.csv")         
+basedir <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/Vipera_latastei_gbif_sourceimages/"
+color_csv    <- paste0(basedir,"Extracted_snakes_pytorch/ColorExtraction_results_v3/snake_color_clusters_v3.csv")         
 coverage_csv <- paste0(basedir,"Extracted_snakes_pytorch/class_coverage.csv")
-gbif_csv     <- paste0(basedir,"Vipera_aspis_gbif_metadata.csv")
+gbif_csv     <- paste0(basedir,"Vipera_latastei_gbif_metadata.csv")
 
 # Minimum class_coverage (%) a photo must have to be trusted for color
 # extraction. Photos below this are dropped before averaging, so a
@@ -190,7 +190,7 @@ pie_icons <- leaflet::icons(
 # photo), overlapping markers should be rarer, but spiderfy still helps
 # for co-located observations.
 snake_map <- leaflet(map_data) %>%
-  addProviderTiles(providers$OpenStreetMap.Mapnik) %>%
+  addProviderTiles(providers$Esri.WorldTerrain) %>%
   addMarkers(
     lng = ~longitude, lat = ~latitude,
     icon = pie_icons,
@@ -221,4 +221,4 @@ snake_map <- leaflet(map_data) %>%
   )
 
 snake_map
-# htmlwidgets::saveWidget(snake_map, "snake_color_map.html", selfcontained = TRUE)
+htmlwidgets::saveWidget(snake_map, paste0("C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors/","snake_color_map_latastei.html"), selfcontained = TRUE)

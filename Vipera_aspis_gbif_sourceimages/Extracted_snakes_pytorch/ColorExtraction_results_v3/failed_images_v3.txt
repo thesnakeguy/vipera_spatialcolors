@@ -1,0 +1,4 @@
+2882944529_2.png: Too few usable background pixels after saturation/black filtering.
+3961099766_1.png: Fewer than 50 snake pixels -- check the crop.
+3961365804_1.png: Fewer than 50 snake pixels -- check the crop.
+4165651337_1.png: Fewer than 50 snake pixels -- check the crop.

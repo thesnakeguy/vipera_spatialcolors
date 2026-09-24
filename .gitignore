@@ -1,0 +1,17 @@
+# Files
+4.SnakeSegmentation_ColorAnalysis.R
+4.SnakeSegmentation_ColorAnalysis_v2.R
+4.SnakeSegmentation_ColorAnalysis_v3.R
+6.SnakeSegmentation_Env-color-association.R
+6.SnakeSegmentation_Env-color-association_MLM.R
+6.SnakeSegmentation_Env-color-association_MLM.qmd
+.Rhistory
+snake_color_map_aspis_files
+snake_color_map_berus_files
+snake_color_map_latastei_files
+
+# Folders
+*.jpg
+*.png
+!Vipera_colorclustering.png
+!Vipera_segmentation.png

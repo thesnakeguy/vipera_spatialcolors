@@ -37,7 +37,7 @@ set.seed(42)
 # ================================================================
 # 1. Load occurrence color data
 # ================================================================
-map_data <- readRDS("map_data.rds")
+# map_data <- readRDS("map_data.rds")
 
 # ================================================================
 # 2. Derive color traits from CIELab (unchanged)
@@ -560,8 +560,9 @@ ggsave("figure_7b_mantel_test.png", p_7b, width = 10, height = 8, dpi = 300)
 
 ### 2.2 Fit Generalized Additive Model on Background Lightness ####
 # Uses a Gaussian Process smooth s(longitude, latitude) alongside environmental main terms
+library(mgcv)
 gam_lightness <- gam(
-  color_contrast ~ s(longitude, latitude, bs = "gp", k = 50) + 
+  lightness_1 ~ s(longitude, latitude, bs = "gp", k = 50) + 
     s(wc2.1_2.5m_bio_1) + 
     s(wc2.1_2.5m_bio_12) + 
     lithology +
@@ -576,12 +577,51 @@ summary(gam_lightness)
 # Visualize pure spatial smooth surface
 plot(gam_lightness, select = 1, scheme = 2, main = "Pure Spatial Effect on Lightness 1")
 
-##################################
+# Take this further and compare different models 
+# List of color traits to model
+color_traits <- c("lightness_1", "chroma_1", "hue_1_deg", "warmth_1", "lightness_2", "chroma_2", "hue_2_deg", "warmth_2")
+
+# List of environmental variables to include
+env_vars <- c("elevation")
+spatial_smooth <- "s(longitude, latitude, bs = 'gp', k = 100)"
+categorical_vars <- c("lithology", "land_cover")
+
+# Fit a GAM for each color trait
+k_env <- 80
+models <- lapply(color_traits, function(trait) {
+  formula <- as.formula(
+    paste(
+      trait, "~",
+      spatial_smooth, "+",
+      paste(sapply(env_vars, function(x) paste0("s(", x, ", k = ", k_env, ")")), collapse = " + "), "+",
+      paste(categorical_vars, collapse = " + ")
+    )
+  )
+  gam(
+    formula,
+    data = point_env_data,
+    method = "REML"
+  )
+})
+
+# Name the models
+names(models) <- color_traits
+
+# Summarize all models
+lapply(models, summary)
+
+# Model diagnostics
+lapply(models, gam.check)
+
+##### Predict effect of env spatially from gam results
 
 library(mgcv)
 library(ggplot2)
 library(sf)
 library(rnaturalearth)
+
+selected_gam <- models$hue_2_deg
+clean_data <- point_env_data
 
 # Helper function to get mode of categorical variables
 get_mode <- function(x) {
@@ -606,8 +646,8 @@ grid_df$elevation         <- median(clean_data$elevation, na.rm = TRUE)
 grid_df$land_cover        <- get_mode(clean_data$land_cover)
 grid_df$lithology         <- get_mode(clean_data$lithology)
 
-# 4. Predict partial terms directly from gam_lightness
-terms_mat <- predict(gam_lightness, newdata = grid_df, type = "terms")
+# 4. Predict partial terms directly from gam model
+terms_mat <- predict(selected_gam, newdata = grid_df, type = "terms")
 
 # Identify and extract s(longitude,latitude)
 spatial_col <- grep("longitude,latitude", colnames(terms_mat), value = TRUE)
@@ -666,3 +706,113 @@ ggplot() +
   theme(
     panel.grid.major = element_line(color = "gray90", linetype = "dashed")
   )
+
+#######################################
+
+
+
+
+
+
+
+# Load required libraries
+library(igraph)      # For network analysis
+library(ggraph)      # For plotting networks
+library(dplyr)       # For data manipulation
+library(ggplot2)     # For additional plotting
+
+# Step 1: Extract color traits (standardize if needed)
+color_data <- point_env_data %>%
+  dplyr::select(longitude, latitude, lightness_1, chroma_1, hue_1_deg, warmth_1, lightness_2, chroma_2, hue_2_deg, warmth_2)
+
+# Standardize color traits (important for distance calculations)
+color_scaled <- scale(color_data[, 3:6])
+
+# Step 2: Compute a distance matrix (Euclidean distance)
+color_dist <- dist(color_scaled, method = "euclidean")
+
+# Convert distance matrix to a similarity matrix (1 - normalized distance)
+# Normalize distance to [0, 1] range for similarity
+max_dist <- max(color_dist)
+similarity_matrix <- 1 - (as.matrix(color_dist) / max_dist)
+
+# Step 3: Create a graph from the similarity matrix
+# Set a threshold for similarity (e.g., 0.9 = 90% similarity)
+similarity_threshold <- 0.80
+
+# Create an adjacency matrix where edges exist if similarity > threshold
+adjacency_matrix <- ifelse(similarity_matrix > similarity_threshold, 1, 0)
+diag(adjacency_matrix) <- 0  # Remove self-loops
+
+# Create an igraph object
+color_network <- graph_from_adjacency_matrix(
+  adjacency_matrix,
+  mode = "undirected",
+  weighted = TRUE,
+  diag = FALSE
+)
+
+# Step 4: Add node attributes (longitude, latitude, cluster)
+V(color_network)$longitude <- color_data$longitude
+V(color_network)$latitude <- color_data$latitude
+V(color_network)$label <- 1:nrow(color_data)  # Label nodes by their index
+
+# Step 5: Detect communities (clusters) in the network
+# Use the Louvain method for community detection
+communities <- cluster_louvain(color_network)
+V(color_network)$community <- communities$membership
+
+# Step 6: Plot the network
+# Use ggraph for better visualization
+library(ggraph)
+ggraph(color_network, layout = "fr") +  # Fruchterman-Reingold layout
+  geom_edge_link(alpha = 0.2) +          # Draw edges with transparency
+  geom_node_point(aes(color = factor(community), size = 3)) +  # Color nodes by community
+  labs(title = "Color Similarity Network (Threshold = 0.9)",
+       color = "Community") +
+  theme_graph() +
+  theme(legend.position = "right")
+
+# Step 7: Plot the network on a geographic map
+# Extract node coordinates and community assignments
+node_data <- data.frame(
+  longitude = V(color_network)$longitude,
+  latitude = V(color_network)$latitude,
+  community = V(color_network)$community
+)
+
+# Plot the network on a map
+ggplot(node_data, aes(x = longitude, y = latitude, color = factor(community))) +
+  geom_point(size = 3) +
+  labs(title = "Color Communities on Geographic Map",
+       x = "Longitude", y = "Latitude", color = "Community") +
+  theme_minimal()
+
+# Step 8: Identify convergent coloration (distant locations in the same community)
+# Extract pairs of nodes in the same community
+convergent_pairs <- data.frame(
+  node1 = endpoints(color_network, E(color_network))[1, ],
+  node2 = endpoints(color_network, E(color_network))[2, ],
+  community = V(color_network)$community[endpoints(color_network, E(color_network))[1, ]]
+)
+
+# Filter for pairs in the same community
+convergent_pairs <- convergent_pairs %>%
+  filter(community == V(color_network)$community[node2])
+
+# Calculate geographic distance for convergent pairs
+convergent_pairs$lon1 <- color_data$longitude[convergent_pairs$node1]
+convergent_pairs$lat1 <- color_data$latitude[convergent_pairs$node1]
+convergent_pairs$lon2 <- color_data$longitude[convergent_pairs$node2]
+convergent_pairs$lat2 <- color_data$latitude[convergent_pairs$node2]
+
+# Calculate Euclidean distance (approximate, for visualization)
+convergent_pairs$geo_distance <- sqrt(
+  (convergent_pairs$lon2 - convergent_pairs$lon1)^2 +
+    (convergent_pairs$lat2 - convergent_pairs$lat1)^2
+)
+
+# View convergent pairs with large geographic distances
+convergent_pairs %>%
+  arrange(desc(geo_distance)) %>%
+  head(10)  # Top 10 most distant pairs with similar colors

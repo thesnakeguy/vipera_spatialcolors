@@ -1,0 +1,1548 @@
+---
+title: "Environment × colour association in *Vipera berus*"
+subtitle: "confounder-aware spatial GAMs and permutation tests"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+    fig-width: 10
+    fig-height: 8
+    df-print: paged
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+---
+
+## Overview
+
+This notebook links colour polymorphism in *Vipera berus* (background and
+zigzag colour, quantified in pipeline `4 … v3`) to the local environment at the
+**observation level**, while controlling for the technical noise inherent in
+opportunistic GBIF / iNaturalist photographs.
+
+It answers two questions:
+
+1. **Which colour trait responds to which environmental driver, how strongly,
+   and in which direction?**
+   → confounder-aware **GAMs** (`mgcv`) fitted to four crystallised colour
+   traits (per-zone lightness, zigzag–background contrast, warmth), with a
+   spatial Gaussian-process smooth, subspecies, season and image-technical
+   covariates as noise controls.
+2. **Is colour variation non-randomly arranged in space — including localised
+   "checkerboards" that a Mantel gradient test would miss?**
+   → a **permutation test** of Moran's *I* plus a neighbour trait-contrast
+   statistic on a k-nearest-neighbour graph.
+
+> **Photographer / camera caveat.** iNaturalist no longer exposes photographer
+> identity, so no random-effect grouping is possible there. Remaining per-photo
+> technical noise is handled by (i) the v3 correction covariates (WB gains,
+> exposure, residual cast), (ii) inverse-variance quality weighting built from
+> within-observation photo dispersion, and (iii) robust interpretation: effect
+> sizes are attenuated by measurement error, so the environmental signal is a
+> **conservative lower bound**.
+
+> **Subspecies caveat.** Subspecies are assigned by point-in-polygon against
+> the WKT polygons in `SUBSPECIES_WKT` (priority: walser, barani, marasso,
+> bosniensis, then berus as catch-all). **Verify the polygons against the
+> species range and current taxonomy before trusting the subspecies term**
+> (see the map below and `subspecies_points.csv`).
+
+------------------------------------------------------------------------
+
+## 0. Setup and configuration
+
+All package dependencies and the machine-specific paths are collected in one
+place. Paths are the only thing you should need to edit to run this on another
+machine.
+
+```{r}
+#| label: setup
+#| message: false
+
+library(dplyr)      # data wrangling
+library(tidyr)      # pivot / unnest
+library(stringr)    # text parsing of the GBIF photo-id list
+library(sf)         # spatial points and distances
+library(terra)      # raster extraction fallback
+library(mgcv)       # GAMs, REML/ML, shrinkage smoothers
+library(farver)     # CIEDE2000 perceptual colour difference
+library(ggplot2)    # all figures
+library(lubridate)  # observation_date -> day-of-year
+
+# Optional: usdm provides a vetted VIF-step procedure. A built-in fallback
+# with the same pruning rule is used if usdm is not installed.
+if (requireNamespace("usdm", quietly = TRUE)) library(usdm)
+```
+
+```{r}
+#| label: config-paths
+#| message: false
+## ---- Paths (EDIT to your machine) --------------------------------------- ##
+base_dir    <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/DeepLearning/vipera_spatialcolors"
+species_dir <- file.path(base_dir, "Vipera_berus_gbif_sourceimages")
+snake_dir   <- file.path(species_dir, "Extracted_snakes_pytorch")
+res_dir     <- file.path(snake_dir, "ColorExtraction_results_v3")
+
+clusters_csv <- file.path(res_dir, "snake_color_clusters_v3.csv")
+corr_csv     <- file.path(res_dir, "correction_metadata.csv")
+coverage_csv <- file.path(snake_dir, "class_coverage.csv")
+gbif_csv     <- file.path(species_dir, "Vipera_berus_gbif_metadata.csv")
+
+ENVROOT <- "C:/Users/pdeschepper/OneDrive - Institute of Natural Sciences/Desktop/PERSONAL/Land_dataproducts/"
+
+out_dir <- file.path(base_dir, "MLM_results_Vipera_berus")
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+```
+
+```{r}
+#| label: config-params
+#| message: false
+
+## ---- Analysis parameters ------------------------------------------------- ##
+COVERAGE_THRESHOLD <- 10   # % class coverage below which a photo is dropped (as in step 5)
+ENV_SMOOTH_K       <- 4    # per-environment smooth basis size (small; shrinkage smoother)
+SPATIAL_K          <- 80   # GP smooth basis size for s(longitude, latitude)
+PERM               <- 999  # permutations for the spatial randomness test
+
+# Fix the RNG once, at the top, so permutations are reproducible; the
+# permutation test also calls set.seed() internally for extra safety.
+set.seed(42)
+```
+
+------------------------------------------------------------------------
+
+## 1. Colour data at the photo level
+
+Three inputs are joined on `photo_id`:
+
+* `snake_color_clusters_v3.csv` — the two colour clusters per photo (cluster 1
+  = lighter background, cluster 2 = darker zigzag) with their CIELab values and
+  pixel proportions;
+* `correction_metadata.csv` — the technical corrections estimated in pipeline 4
+  v3 (white-balance gains, exposure, residual cast, saturation);
+* `class_coverage.csv` — the segmentation class coverage, used as a quality
+  filter.
+
+The GBIF metadata stores the linked photo ids as a Python-style string
+(`"['a.jpg', 'b.jpg']"`), which is parsed into one row per photo.
+
+```{r}
+#| label: load-photo-data
+#| message: false
+
+clusters <- read.csv(clusters_csv, stringsAsFactors = FALSE)
+corr_md  <- read.csv(corr_csv,     stringsAsFactors = FALSE)
+gbif     <- read.csv(gbif_csv,     stringsAsFactors = FALSE)
+
+stopifnot(c("photo_id", "cluster", "L", "a", "b") %in% names(clusters))
+stopifnot(c("photo_id", "wb_gain_r") %in% names(corr_md))
+
+# One row per photo: pivot the two colour clusters (1 = background,
+# 2 = zigzag) into wide L/a/b + proportion columns.
+clusters_wide <- clusters %>%
+  distinct(photo_id, cluster, .keep_all = TRUE) %>%
+  dplyr::select(photo_id, cluster, proportion, L, a, b) %>%
+  tidyr::pivot_wider(
+    id_cols    = photo_id,
+    names_from = cluster,
+    values_from = c(proportion, L, a, b),
+    names_glue = "{.value}_{cluster}"
+  ) %>%
+  dplyr::filter(
+    !is.na(L_1), !is.na(L_2), !is.na(a_1),
+    !is.na(b_1), !is.na(a_2), !is.na(b_2)
+  )
+
+# Class coverage (photo_ID column, extension stripped so ids match)
+coverage <- read.csv(coverage_csv, stringsAsFactors = FALSE) %>%
+  mutate(photo_id = stringr::str_remove(photo_ID, "\\.[A-Za-z]+$")) %>%
+  dplyr::select(photo_id, class_coverage)
+
+# GBIF observation -> photo link table (parse the Python-list string)
+gbif_long <- gbif %>%
+  mutate(photo_id_list = stringr::str_extract_all(photo_ids, "'([^']+)'")) %>%
+  tidyr::unnest(photo_id_list) %>%
+  mutate(photo_id = stringr::str_remove_all(photo_id_list, "'")) %>%
+  dplyr::select(gbif_id, latitude, longitude, observation_date, photo_id) %>%
+  distinct()
+
+photo_level <- clusters_wide %>%
+  inner_join(coverage,  by = "photo_id") %>%
+  inner_join(corr_md,   by = "photo_id") %>%
+  inner_join(gbif_long, by = "photo_id") %>%
+  dplyr::filter(class_coverage > COVERAGE_THRESHOLD)
+
+cat(nrow(photo_level), "photos passed the coverage filter.\n")
+```
+
+------------------------------------------------------------------------
+
+## 2. Aggregate to the observation level (with quality weights)
+
+Colour is averaged in CIELab **per zone** across all photos of an observation.
+Quality is encoded in a weight `w` built from two ingredients:
+
+* **informative mass** — `n_photos × mean class coverage`, i.e. how much
+  reliable segmentation evidence the observation carries;
+* **technical noise** — the within-observation dispersion (SD) of the six Lab
+  values across photos. Observations whose photos disagree are down-weighted.
+
+Because photographer identity is unavailable, these weights plus the v3
+correction covariates carry the technical-noise information. Weights are
+rescaled to mean 1 so they do not change the scale of the model coefficients.
+
+```{r}
+#| label: obs-level
+#| message: false
+
+obs_level <- photo_level %>%
+  group_by(gbif_id, latitude, longitude, observation_date) %>%
+  summarise(
+    n_photos   = n(),
+    prop_1     = mean(proportion_1, na.rm = TRUE),
+    prop_2     = mean(proportion_2, na.rm = TRUE),
+
+    # Zone means, weighted by the pixel proportion of each colour zone.
+    L_1 = weighted.mean(L_1, w = proportion_1, na.rm = TRUE),
+    a_1 = weighted.mean(a_1, w = proportion_1, na.rm = TRUE),
+    b_1 = weighted.mean(b_1, w = proportion_1, na.rm = TRUE),
+    L_2 = weighted.mean(L_2, w = proportion_2, na.rm = TRUE),
+    a_2 = weighted.mean(a_2, w = proportion_2, na.rm = TRUE),
+    b_2 = weighted.mean(b_2, w = proportion_2, na.rm = TRUE),
+
+    mean_class_coverage  = mean(class_coverage,    na.rm = TRUE),
+    mean_wb_gain_r       = mean(wb_gain_r,         na.rm = TRUE),
+    mean_wb_gain_g       = mean(wb_gain_g,         na.rm = TRUE),
+    mean_wb_gain_b       = mean(wb_gain_b,         na.rm = TRUE),
+    mean_exposure_gain   = mean(exposure_gain,     na.rm = TRUE),
+    mean_residual_euclid = mean(residual_euclid,   na.rm = TRUE),
+    mean_saturated_frac  = mean(saturated_frac,    na.rm = TRUE),
+
+    # Technical-noise proxy: mean SD of the six Lab values across photos.
+    dispersion = mean(c(
+      stats::sd(L_1, na.rm = TRUE), stats::sd(a_1, na.rm = TRUE),
+      stats::sd(b_1, na.rm = TRUE), stats::sd(L_2, na.rm = TRUE),
+      stats::sd(a_2, na.rm = TRUE), stats::sd(b_2, na.rm = TRUE)
+    ), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    doy = lubridate::yday(as.Date(substr(observation_date, 1, 10))),
+
+    # dispersion is undefined for single-photo observations (SD of one value
+    # is NA). Impute those from the median of multi-photo observations; if none
+    # exist, fall back to a floor of 1 CIELab unit so dispersion can never be NA.
+    dispersion = ifelse(!is.finite(dispersion),
+                        stats::median(dispersion, na.rm = TRUE), dispersion),
+    dispersion = ifelse(!is.finite(dispersion), 1, dispersion),
+
+    inform = n_photos * pmin(mean_class_coverage / 100, 1),
+    inform = ifelse(!is.finite(inform) | inform < 1, 1, inform),
+
+    # inverse-variance-style weight: informative mass penalised by tech noise
+    w = inform / (dispersion^2 + 0.01),
+    w = ifelse(!is.finite(w) | w <= 0, 1, w)
+  )
+
+# Normalise weights to mean 1 so model scales are unaffected.
+obs_level$w <- obs_level$w / mean(obs_level$w, na.rm = TRUE)
+
+cat(sprintf("Observation-level weight diagnostics: %d obs, %d with >1 photo,\n",
+            nrow(obs_level), sum(obs_level$n_photos > 1)))
+cat(sprintf("  weight range %.3f - %.3f (mean 1), %d NA\n",
+            min(obs_level$w, na.rm = TRUE), max(obs_level$w, na.rm = TRUE),
+            sum(is.na(obs_level$w))))
+
+if (any(is.na(obs_level$w))) {
+  obs_level$w[is.na(obs_level$w)] <- 1
+  cat("  (imputed residual NA weights to 1)\n")
+}
+```
+
+------------------------------------------------------------------------
+
+## 3. Environmental covariates, VIF pruning and subspecies
+
+### 3a. Load point-level environment at the observations
+
+The code extracts land cover, lithology, the 19 bioclim layers and elevation
+from the raw rasters under `ENVROOT`. Any step-6 trait columns or duplicate
+coordinate/date columns in the cache are dropped before joining, and the join
+is keyed on `gbif_id` (coerced to character on both sides so a type mismatch
+cannot silently produce zero matches).
+
+```{r}
+#| label: env-load
+#| message: false
+
+load_env_at_points <- function(occ_sf, envroot) {
+
+  pts <- terra::vect(occ_sf)
+
+  # Paths
+  land_cover_path <- file.path(
+    envroot,
+    "Corine_landcover_vector_2018/103580/Results/",
+    "u2018_clc2018_v2020_20u1_raster100m/",
+    "u2018_clc2018_v2020_20u1_raster100m/DATA/",
+    "U2018_CLC2018_V2020_20u1.tif"
+  )
+
+  lithology_path <- file.path(
+    envroot, "EGDI_europe_lithology/GeologicUnitView.gpkg"
+  )
+
+  bioclim_path <- file.path(
+    envroot, "bioclim/climate/wc2.1_2.5m"
+  )
+
+  elevation_path <- file.path(
+    envroot,
+    "elevation/elevation/wc2.1_2.5m/wc2.1_2.5m_elev.tif"
+  )
+
+  enz_path <- file.path(
+    envroot,
+    "Metzger_Environmental_stratification_of_Europe(EnZ)/ens_v8.shp"
+  )
+
+  # Raster extraction helper
+  extract_raster <- function(x, pts, name = NULL) {
+
+    r <- if (inherits(x, "SpatRaster")) x else terra::rast(x)
+
+    if (!terra::hasValues(r))
+      stop("Raster has no values: ", paste(names(r), collapse = ", "))
+
+    p <- terra::project(pts, terra::crs(r))
+
+    out <- terra::extract(r, p, ID = FALSE)
+    out <- as.data.frame(out)
+
+    if (!is.null(name) && ncol(out) == 1)
+      names(out) <- name
+
+    out
+  }
+
+  # Land cover
+  land_cover <- extract_raster(
+    land_cover_path, pts, "land_cover"
+  )
+
+  # Bioclim
+  bio_files <- list.files(
+    bioclim_path,
+    pattern = "\\.tif$",
+    full.names = TRUE
+  )
+
+  if (!length(bio_files))
+    stop("No bioclim .tif files found in: ", bioclim_path)
+
+  bioclim <- extract_raster(
+    terra::rast(bio_files), pts
+  )
+
+  # Elevation
+  elevation <- extract_raster(
+    elevation_path, pts, "elevation"
+  )
+
+  # EnZ / EnS
+  ens <- terra::vect(enz_path)
+  p <- terra::project(pts, terra::crs(ens))
+
+  enz <- terra::extract(
+    ens[, c("EnS", "EnS_name", "EnZ", "EnZ_name")],
+    p
+  )
+  enz <- enz[, c("EnS", "EnS_name", "EnZ", "EnZ_name")] # remove ID column
+
+  # Lithology
+  lv <- terra::vect(lithology_path)
+  p <- terra::project(pts, terra::crs(lv))
+
+  lith <- terra::extract(lv, p)
+
+  lithology <- data.frame(
+    lithology = lith$representativelithology_title[
+      match(seq_len(nrow(pts)), lith[[1]])
+    ]
+  )
+
+  # Combine
+  cbind(
+    land_cover,
+    lithology,
+    bioclim,
+    elevation,
+    enz
+  )
+}
+
+occ_sf_full <- obs_level %>%
+  sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+env_raw <- load_env_at_points(occ_sf = occ_sf_full, envroot = ENVROOT)
+dat <- bind_cols(obs_level, env_raw)
+
+
+# Safety net: if any .x/.y duplicates slipped through, keep the obs_level copy
+# and drop the .y one. dat$latitude / dat$longitude must exist as plain columns
+# for assign_subspecies(), the maps and the models.
+dupe_y <- intersect(c("latitude.y", "longitude.y", "observation_date.y"), names(dat))
+if (length(dupe_y)) {
+  cat("(clean-up) dropping duplicated join columns:", paste(dupe_y, collapse = ", "), "\n")
+  dat <- dat %>% dplyr::select(-all_of(dupe_y))
+}
+```
+
+### 3b. VIF pruning of the bioclimatic layers
+
+The 19 WorldClim bioclim variables are highly collinear. We drop variables
+iteratively until all remaining VIFs are below 5, using `usdm::vifstep()` when
+available and an equivalent built-in step otherwise. The survivors are renamed
+to safe syntactic names (`bio_1`, `bio_2`, …) for formula use.
+
+```{r}
+#| label: env-vif
+#| message: false
+
+bioclim_names <- grep("bio", names(dat), value = TRUE)
+
+vif_select <- function(x, th = 5) {
+
+  if (requireNamespace("usdm", quietly = TRUE)) {
+    v <- usdm::vifstep(as.data.frame(x), th = th)
+    return(as.character(v@results$Variables))
+  }
+
+  # Built-in fallback (same pruning rule: drop the highest VIF, repeat).
+  keep <- names(x)
+  repeat {
+    vif <- 1 / (1 - sapply(keep, function(k) {
+      z <- x[, setdiff(keep, k), drop = FALSE]
+      if (ncol(z) == 0) return(0)
+      summary(stats::lm(x[[k]] ~ ., data = as.data.frame(z)))$r.squared
+    }))
+    if (max(vif) <= th || length(keep) <= 2) break
+    keep <- keep[-which.max(vif)]
+  }
+  keep
+}
+
+complete_rows <- stats::complete.cases(dat[, bioclim_names, drop = FALSE])
+bio_sel <- vif_select(dat[complete_rows, bioclim_names, drop = FALSE], th = 5)
+
+cat("Bioclim retained after VIF pruning (", length(bio_sel), "of", length(bioclim_names), "):\n")
+print(bio_sel)
+
+# Rename to safe syntactic names for formulas.
+bio_sel    <- bio_sel[bio_sel %in% names(dat)]
+bio_rename <- stats::setNames(paste0("bio_", seq_along(bio_sel)), bio_sel)
+idx        <- match(names(bio_rename), names(dat))
+names(dat)[idx] <- as.character(bio_rename)
+
+continuous_vars <- c("elevation", paste0("bio_", seq_along(bio_rename)))
+continuous_vars <- continuous_vars[continuous_vars %in% names(dat)]
+if (!"elevation" %in% continuous_vars) cat("(warn) 'elevation' not found in env data.\n")
+cat("Continuous env variables for analysis:", paste(continuous_vars, collapse = ", "), "\n")
+```
+
+### 3c. Subspecies from WKT polygons
+
+Subspecies are assigned by point-in-polygon against the WKT polygons below
+(lon/lat, EPSG:4326), in priority order: `walser` (Pennine Alps isolate near
+Biella) first, then `barani` (Marmara/Black-sea Turkey), `marasso` (Alps,
+Austria, Po plain, SE Bavaria), `bosniensis` (Dinaric Balkans to N Greece and
+SW Hungary), and finally `berus` (nominate catch-all for the rest of the
+range). Ranges follow the Reptile Database *V. berus* account, Schmidtler
+(2019) and Schmidtler & Hansbauer (2020) for `marasso`, Ghielmi et al. (2016)
+for `walser`, and Gul (2015) / Avci et al. (2021) for `barani`.
+`sachalinensis` (Far East) lies outside the GBIF extent and is not included.
+**Polygons are approximate -- verify** them against the map below and
+`subspecies_points.csv` (e.g. in QGIS) before trusting the subspecies term.
+You may instead supply a GeoPackage (`SUBSPECIES_WKT_DSN`) with columns
+`name` + `priority`. Points outside all polygons stay `NA` and are dropped
+before modelling.
+
+```{r}
+#| label: subspecies
+#| message: false
+
+SUBSPECIES_WKT <- c(
+  # priority order: first polygon containing a point wins
+  walser = "POLYGON((7.70 45.55, 8.20 45.55, 8.20 45.90, 7.70 45.90, 7.70 45.55))",
+  barani = "POLYGON((27.0 39.8, 38.0 39.8, 38.0 41.8, 27.0 41.5, 27.0 39.8))",
+  marasso = "POLYGON((7.0 44.0, 7.0 45.5, 9.0 46.6, 11.5 47.6, 12.5 48.5, 16.5 48.5, 16.5 46.0, 15.5 44.5, 12.0 43.8, 7.0 44.0))",
+  bosniensis = "POLYGON((13.5 44.5, 13.5 46.0, 16.0 46.8, 20.0 46.8, 23.5 46.0, 23.5 42.0, 22.0 40.0, 20.5 39.0, 19.0 39.5, 17.0 41.0, 15.0 43.0, 13.5 44.5))",
+  berus = "POLYGON((-11.0 36.0, 62.0 36.0, 62.0 72.0, -11.0 72.0, -11.0 36.0))"
+)
+
+# Optional override: a GeoPackage with columns `name` + `priority`
+# (one row per subspecies polygon, same lon/lat CRS).
+SUBSPECIES_WKT_DSN <- NULL
+
+resolve_polys <- function() {
+  if (!is.null(SUBSPECIES_WKT_DSN) && file.exists(SUBSPECIES_WKT_DSN)) {
+    g <- sf::st_read(SUBSPECIES_WKT_DSN, quiet = TRUE)
+    g <- g[order(g$priority), ]
+    polys <- lapply(seq_len(nrow(g)), function(i) sf::st_geometry(g[i, ]))
+    names(polys) <- g$name
+    return(polys)
+  }
+  lapply(SUBSPECIES_WKT, function(w) sf::st_as_sfc(w, crs = 4326))
+}
+
+# Assign each point to the first (highest-priority) polygon that contains it.
+# NOTE: planar mode -- the WKT polygons are hand-drawn lon/lat boxes that must
+# behave exactly as drawn (s2 great-circle edges carve spurious holes out of
+# wide boxes, e.g. the berus catch-all).
+assign_subspecies <- function(dat, polys = resolve_polys()) {
+  old_s2 <- sf::sf_use_s2(FALSE)
+  on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+  pts <- sf::st_as_sf(dat, coords = c("longitude", "latitude"),
+                      crs = 4326, remove = FALSE)
+  s <- rep(NA_character_, nrow(dat))
+  for (nm in names(polys)) {
+    hit <- is.na(s) &
+      as.logical(sf::st_intersects(pts, polys[[nm]], sparse = FALSE)[, 1])
+    s[hit] <- nm
+  }
+  s
+}
+
+polys <- resolve_polys()
+dat$subspecies <- assign_subspecies(dat, polys)
+
+# Per-observation assignment, written out for external checking (e.g. QGIS).
+if ("gbif_id" %in% names(dat)) {
+  write.csv(dat[, c("gbif_id", "longitude", "latitude", "subspecies")],
+            file.path(out_dir, "subspecies_points.csv"), row.names = FALSE)
+}
+
+cat("\nSubspecies assignment (VERIFY these counts!):\n")
+print(table(dat$subspecies, useNA = "ifany"))
+write.csv(data.frame(table(dat$subspecies, useNA = "ifany")),
+          file.path(out_dir, "subspecies_assignment.csv"))
+```
+
+```{r}
+#| label: subspecies-map
+#| fig-cap: "Assumed subspecies polygons (dashed) over the actual observations."
+
+# Range boxes vs. actual observations, so a mis-specified box is visible.
+# Assumed polygons vs. actual observations, so a mis-specified polygon is visible.
+plot_subspecies_map <- function(dat, polys, xlim = c(-11, 65), ylim = c(38, 71)) {
+  cols <- c(walser = "#66a61e", barani = "#e7298a",
+             marasso = "#7570b3", bosniensis = "#d95f02", berus = "#1b9e77")
+  g <- do.call(rbind, lapply(names(polys), \(nm)
+    sf::st_sf(name = nm, geometry = polys[[nm]])))
+
+  pts <- dat[!is.na(dat$subspecies), ]
+
+  p <- ggplot2::ggplot()
+
+  p <- ggplot2::ggplot()
+  if (requireNamespace("maps", quietly = TRUE)) {
+    p <- p + ggplot2::borders("world", xlim = xlim, ylim = ylim,
+                              colour = "grey40", fill = "grey90")
+  }
+
+  p +
+    ggplot2::geom_sf(data = g, ggplot2::aes(colour = name),
+                     fill = NA, linetype = "dashed", linewidth = 0.6) +
+    ggplot2::geom_point(data = pts,
+                        ggplot2::aes(longitude, latitude, fill = subspecies),
+                        shape = 21, colour = "grey15", size = 1.5, alpha = .85) +
+    ggplot2::scale_fill_manual(values = cols, name = "Assumed subspecies") +
+    ggplot2::scale_colour_manual(values = cols, name = "Assumed subspecies") +
+    ggplot2::coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+    ggplot2::labs(x = "longitude", y = "latitude") +
+    ggplot2::theme_minimal()
+}
+
+plot_subspecies_map(dat, polys)
+```
+
+### 3d. Final analysis dataset and crystallised colour traits
+
+Four response traits are derived per observation:
+
+| Trait | Definition | Meaning |
+|:--|:--|:--|
+| `L_1` | lightness of cluster 1 | background lightness |
+| `L_2` | lightness of cluster 2 | zigzag lightness |
+| `contrast` | CIEDE2000 distance between the two zone colours | pattern contrast |
+| `warmth` | `b*_1 − a*_1` | background yellowness (Cartesian, model-safe) |
+
+Rare categorical levels (`< 5` observations) of land cover and lithology are
+pooled into `"other"` so the model matrix cannot explode with sparse dummies.
+
+```{r}
+#| label: final-dataset
+#| message: false
+
+lab_cols  <- c("L_1", "a_1", "b_1", "L_2", "a_2", "b_2")
+tech_vars <- c("mean_wb_gain_r", "mean_wb_gain_g", "mean_wb_gain_b",
+               "mean_exposure_gain", "mean_residual_euclid", "mean_saturated_frac")
+
+keep_cols <- unique(c("gbif_id", "longitude", "latitude", "doy", "w",
+                      lab_cols, "prop_1", "prop_2", continuous_vars,
+                      "land_cover", "lithology", "subspecies", tech_vars))
+
+dat <- dat[, keep_cols, drop = FALSE] %>%
+  mutate(across(any_of(c(continuous_vars, lab_cols, tech_vars)), ~ as.numeric(.x))) %>%
+  filter(!is.na(latitude), !is.na(longitude))
+
+# Pool rare levels of the categorical covariates.
+pool_rare_levels <- function(x, min_n = 5, what = "") {
+  xc <- as.character(x)
+  k  <- table(xc)
+  small <- names(k)[k < min_n & !is.na(names(k)) & names(k) != "other"]
+  if (length(small)) {
+    cat(sprintf("  (pool) %s: %d class(es) with < %d obs -> 'other'\n",
+                what, length(small), min_n))
+    xc[xc %in% small] <- "other"
+  }
+  factor(xc)
+}
+
+for (v in c("land_cover", "lithology")) {
+  if (v %in% names(dat)) dat[[v]] <- pool_rare_levels(dat[[v]], what = v)
+}
+
+# --- Derived traits: the crystallised response set -------------------------
+# L_1 / L_2  : lightness of the lighter (background) and darker (zigzag) zone.
+# contrast    : perceptual CIEDE2000 colour difference between the two zones.
+# warmth      : background yellowness, b*_1 - a*_1 -- Cartesian, so it can be
+#               used directly in models (unlike the circular hue angle).
+tmp_ct <- farver::compare_colour(
+  as.matrix(dat[, c("L_1", "a_1", "b_1"), drop = FALSE]),
+  as.matrix(dat[, c("L_2", "a_2", "b_2"), drop = FALSE]),
+  from_space = "lab", to_space = "lab", method = "cie2000"
+)
+dat$contrast <- diag(tmp_ct)
+dat$warmth   <- dat$b_1 - dat$a_1
+trait_cols   <- c("L_1", "L_2", "contrast", "warmth")
+
+cat("Crystallised colour traits:", paste(trait_cols, collapse = ", "), "\n")
+
+# --- Complete cases and dropping of unassigned points ----------------------
+n_na <- colSums(is.na(dat))
+if (any(n_na > 0)) {
+  cat("\nNA counts by column (before complete-cases):\n")
+  print(n_na[n_na > 0])
+}
+
+cc <- stats::complete.cases(dat)
+cat(sprintf("\nObservations retained after complete-cases: %d / %d\n", sum(cc), nrow(dat)))
+dat_full <- dat
+dat      <- dat[cc, ]
+
+if (!nrow(dat)) {
+  cat("\n--- Column NA / constantness diagnostics ---\n")
+  na_pct <- sort(colMeans(is.na(dat_full)) * 100, decreasing = TRUE)
+  print(round(na_pct, 1))
+  stop("All observations were dropped by complete.cases -- inspect the NA diagnostic above.")
+}
+
+n_unk <- sum(is.na(dat$subspecies))
+if (n_unk > 0) {
+  cat(sprintf("  -> dropping %d observation(s) with unassigned subspecies.\n", n_unk))
+  dat <- dat[!is.na(dat$subspecies), ]
+}
+```
+
+------------------------------------------------------------------------
+
+## 4. Confounder-aware spatial GAMs
+
+For each colour trait we fit a **full** and a **reduced** model with `mgcv`:
+
+* **Full model** — environmental smooths (`bs = "ts"`, shrinkage) **+** a spatial
+  Gaussian-process smooth `s(longitude, latitude, bs = "gp")` **+** a cyclic
+  day-of-year smooth `s(doy, bs = "cc")` **+** subspecies / land cover /
+  lithology **+** the technical correction covariates.
+* **Reduced model** — everything except the environmental smooths.
+
+This isolates the *environmental* contribution above and beyond geography,
+season, subspecies and image technology. `select = TRUE` adds an extra
+shrinkage penalty so genuinely uninformative smooths collapse to ~0 edf. The
+environmental block is tested with an approximate Chi-square LRT using **ML**
+fits (REML is invalid for comparing models with different fixed effects); R²
+and deviance explained are reported from the **REML** fits.
+
+```{r}
+#| label: gam-fit
+#| message: false
+
+fit_trait_models <- function(
+    d,
+    traits   = NULL,
+    env_vars = NULL,
+    cat_vars = c("land_cover", "lithology", "subspecies"),
+    tech_vars = NULL,
+    k_env = ENV_SMOOTH_K,
+    k_sp  = SPATIAL_K
+) {
+
+  # Resolve globals from the calling frame rather than as recursive defaults.
+  if (is.null(traits))    traits    <- get("trait_cols",      envir = parent.frame())
+  if (is.null(env_vars))  env_vars  <- get("continuous_vars", envir = parent.frame())
+  if (is.null(tech_vars)) tech_vars <- get("tech_vars",      envir = parent.frame())
+
+  if (nrow(d) < 30) {
+    stop(sprintf("Spatial GAM needs >= 30 rows; got %d.", nrow(d)))
+  }
+
+  # Keep only usable predictors (present, non-constant); otherwise mgcv raises
+  # errors such as "contrasts can be applied only to factors with 2+ levels".
+  env_vars  <- env_vars[env_vars %in% names(d)]
+  cat_vars  <- cat_vars[cat_vars %in% names(d)]
+  tech_vars <- tech_vars[tech_vars %in% names(d)]
+
+  cat_vars <- cat_vars[vapply(cat_vars, function(v)
+    length(unique(d[[v]][!is.na(d[[v]])])) > 1, logical(1))]
+
+  env_vars <- env_vars[vapply(env_vars, function(v) {
+    x <- d[[v]]
+    length(unique(x[!is.na(x)])) > 1
+  }, logical(1))]
+
+  if (!length(env_vars)) stop("GAM: no non-constant environmental variables available.")
+
+  # Character predictors -> factors.
+  for (v in c(cat_vars, tech_vars)) {
+    if (v %in% names(d) && is.character(d[[v]])) d[[v]] <- factor(d[[v]])
+  }
+
+  if (!"w" %in% names(d)) d$w <- 1
+
+  cat("  (GAM) environmental variables:", paste(env_vars, collapse = ", "), "\n")
+
+  # Shared (non-environmental) terms: space, season, categoricals, technology.
+  base_terms <- c(
+    sprintf("s(longitude, latitude, bs = 'gp', k = %d)", k_sp),
+    "s(doy, k = 4, bs = 'cc')",
+    cat_vars,
+    tech_vars
+  )
+
+  env_terms <- vapply(env_vars, function(v)
+    sprintf("s(%s, k = %d, bs = 'ts')", v, k_env), character(1))
+
+  full_form <- function(trait)
+    as.formula(paste(trait, "~", paste(c(env_terms, base_terms), collapse = " + ")))
+
+  red_form <- function(trait)
+    as.formula(paste(trait, "~", paste(base_terms, collapse = " + ")))
+
+  rows <- lapply(traits, function(tr) {
+
+    # Complete cases across every variable this model needs.
+    vars_needed <- unique(c(tr, env_vars, cat_vars, tech_vars,
+                            "longitude", "latitude", "doy", "w"))
+    dd <- d[complete.cases(d[, vars_needed, drop = FALSE]), , drop = FALSE]
+
+    if (nrow(dd) < 30) {
+      stop(sprintf("Trait '%s' has fewer than 30 complete observations (%d).", tr, nrow(dd)))
+    }
+
+    # Final (REML) models.
+    f_full <- mgcv::gam(full_form(tr), data = dd, method = "REML",
+                        weights = w, select = TRUE, na.action = na.exclude)
+    f_red_reml <- mgcv::gam(red_form(tr), data = dd, method = "REML",
+                            weights = w, select = TRUE, na.action = na.exclude)
+
+    # ML versions, needed to compare models with different fixed effects.
+    f_full_ml <- mgcv::gam(full_form(tr), data = dd, method = "ML",
+                           weights = w, select = TRUE, na.action = na.exclude)
+    f_red_ml  <- mgcv::gam(red_form(tr),  data = dd, method = "ML",
+                           weights = w, select = TRUE, na.action = na.exclude)
+
+    # Approximate test of the environmental block.
+    av <- tryCatch(stats::anova(f_red_ml, f_full_ml, test = "Chisq"),
+                   error = function(e) NULL)
+
+    p_env <- NA_real_
+    if (!is.null(av)) {
+      avd <- tryCatch(as.data.frame(av), error = function(e) NULL)
+      if (!is.null(avd)) {
+        pcols <- grep("^Pr\\(", colnames(avd), value = TRUE)
+        if (length(pcols)) p_env <- as.numeric(tail(avd[[pcols[1]]], 1))
+      }
+    }
+
+    # Model summaries.
+    sm_full <- summary(f_full)
+    sm_red  <- summary(f_red_reml)
+
+    r2_full  <- sm_full$r.sq
+    r2_red   <- sm_red$r.sq
+    dev_full <- sm_full$dev.expl
+    st       <- sm_full$s.table
+
+    # Effective degrees of freedom of the environmental smooths.
+    env_edf <- if (!is.null(st) && nrow(st)) {
+      sum(vapply(env_vars, function(v) {
+        keep <- grepl(paste0("^s\\(", v, "(,|\\))"), rownames(st))
+        if (any(keep)) sum(st[keep, "edf"]) else 0
+      }, numeric(1)))
+    } else {
+      NA_real_
+    }
+
+    # Individual environmental-smooth p-values.
+    env_p <- if (!is.null(st) && nrow(st)) {
+      out <- numeric(length(env_vars)); names(out) <- env_vars
+      for (v in env_vars) {
+        keep <- grepl(paste0("^s\\(", v, "(,|\\))"), rownames(st))
+        out[v] <- if (any(keep) && "p-value" %in% colnames(st))
+          st[keep, "p-value"][1] else NA_real_
+      }
+      out
+    } else {
+      setNames(rep(NA_real_, length(env_vars)), env_vars)
+    }
+
+    result_row <- data.frame(
+      trait = tr,
+      n = nrow(dd),
+      p_env = p_env,
+      delta_R2 = r2_full - r2_red,   # environmental gain (conservative)
+      R2_full = r2_full,
+      R2_reduced = r2_red,
+      dev_expl = dev_full,
+      env_edf = env_edf,
+      stringsAsFactors = FALSE
+    )
+
+    list(df = result_row, model = f_full, model_reduced = f_red_reml, env_p = env_p)
+  })
+
+  tab <- do.call(rbind, lapply(rows, `[[`, "df"))
+  tab$p_env_fdr <- stats::p.adjust(tab$p_env, method = "BH")
+
+  list(
+    table          = tab,
+    models         = stats::setNames(lapply(rows, `[[`, "model"),         traits),
+    reduced_models = stats::setNames(lapply(rows, `[[`, "model_reduced"), traits),
+    env_p          = stats::setNames(lapply(rows, `[[`, "env_p"),         traits)
+  )
+}
+```
+
+```{r}
+#| label: gam-run
+#| message: false
+
+cat("\n=== Confounder-aware spatial GAMs ===\n")
+
+gam_out <- fit_trait_models(dat)
+
+print(gam_out$table)
+
+write.csv(gam_out$table,
+          file.path(out_dir, "gam_env_association.csv"),
+          row.names = FALSE)
+
+for (tr in trait_cols) {
+  cat("\n-----", tr, "-----\n")
+  print(summary(gam_out$models[[tr]]))
+}
+```
+
+### 4a. Per-driver environmental smooths (table)
+
+The block-level test above says *whether* the environment matters; this table
+says *which* driver, with its effective degrees of freedom, F and (BH-adjusted)
+p-value. Non-linear structure is captured by the edf (`≈1` ≈ linear, `>1` ≈
+curved).
+
+```{r}
+#| label: gam-smooths-extract
+#| message: false
+
+extract_env_smooths <- function(gam_out, env_vars) {
+
+  out <- lapply(names(gam_out$models), function(tr) {
+
+    m  <- gam_out$models[[tr]]
+    sm <- summary(m)$s.table
+
+    if (is.null(sm) || !nrow(sm)) return(NULL)
+
+    vars_present <- env_vars[vapply(env_vars, function(v)
+      any(grepl(paste0("^s\\(", v, "(,|\\))"), rownames(sm))), logical(1))]
+
+    if (!length(vars_present)) return(NULL)
+
+    do.call(rbind, lapply(vars_present, function(v) {
+      rn <- grep(paste0("^s\\(", v, "(,|\\))"), rownames(sm), value = TRUE)
+      x  <- sm[rn[1], , drop = FALSE]
+      data.frame(
+        trait = tr,
+        variable = v,
+        edf = x[1, "edf"],
+        ref_df = x[1, "Ref.df"],
+        F = x[1, "F"],
+        p_value = x[1, "p-value"],
+        stringsAsFactors = FALSE
+      )
+    }))
+  })
+
+  out <- do.call(rbind, out)
+
+  out$p_FDR <- stats::p.adjust(out$p_value, method = "BH")
+  out$interpretation <- ifelse(out$p_FDR < 0.05, "significant smooth", "ns")
+
+  rownames(out) <- NULL
+  out
+}
+
+env_smooths <- extract_env_smooths(gam_out, continuous_vars)
+
+print(env_smooths)
+write.csv(env_smooths,
+          file.path(out_dir, "gam_individual_environmental_smooths.csv"),
+          row.names = FALSE)
+
+env_smooths[order(env_smooths$trait, env_smooths$p_FDR), ]
+```
+
+### 4b. Per-driver environmental smooths (figure)
+
+Partial-effect curves for every environmental driver × trait combination, with
+95% confidence ribbons. The panel grid varies the environmental driver down the
+rows and the colour trait across the columns, so a driver's effect on all four
+traits can be read off a single row.
+
+```{r}
+#| label: gam-smooths-plot-fn
+#| message: false
+
+plot_environmental_smooths <- function(models,
+                                       env_vars,
+                                       traits = names(models),
+                                       out_svg,
+                                       n = 100) {
+
+  if (!requireNamespace("ggplot2", quietly = TRUE))
+    stop("Package 'ggplot2' is required.")
+
+  plot_list <- list()
+
+  for (tr in traits) {
+
+    m <- models[[tr]]
+    if (is.null(m)) next
+
+    md <- m$model
+
+    for (v in env_vars) {
+
+      if (!v %in% names(md)) next
+      if (!is.numeric(md[[v]])) next
+
+      x  <- md[[v]]
+      xr <- range(x, na.rm = TRUE)
+      if (!all(is.finite(xr)) || diff(xr) == 0) next
+
+      # Which smooth corresponds to this single-term predictor?
+      sm_idx <- which(vapply(m$smooth, function(s)
+        length(s$term) == 1 && identical(s$term, v), logical(1)))
+      if (!length(sm_idx)) next
+
+      sm_name <- m$smooth[[sm_idx[1]]]$label
+
+      # Start from a real model observation, repeat it over the prediction
+      # grid, then vary only the environmental predictor.
+      newdata <- md[1, , drop = FALSE]
+      newdata <- newdata[rep(1, n), , drop = FALSE]
+      rownames(newdata) <- NULL
+      newdata[[v]] <- seq(xr[1], xr[2], length.out = n)
+
+      pr <- predict(m, newdata = newdata, type = "terms",
+                    terms = sm_name, se.fit = TRUE)
+
+      fit <- as.numeric(pr$fit[, 1])
+      se  <- as.numeric(pr$se.fit[, 1])
+
+      plot_list[[length(plot_list) + 1]] <- data.frame(
+        trait = tr,
+        variable = v,
+        x = newdata[[v]],
+        fit = fit,
+        lower = fit - 1.96 * se,
+        upper = fit + 1.96 * se,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  if (!length(plot_list)) {
+    stop("No environmental smooths could be extracted. ",
+         "Check that env_vars match the variables used in the GAMs.")
+  }
+
+  plot_data <- do.call(rbind, plot_list)
+  rownames(plot_data) <- NULL
+
+  # One facet per environmental-driver x trait combination.
+  plot_data$panel <- interaction(plot_data$variable, plot_data$trait,
+                                 sep = " | ", drop = TRUE)
+
+  p <- ggplot2::ggplot(plot_data, ggplot2::aes(x = x, y = fit)) +
+    ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    ggplot2::geom_line(linewidth = 0.8) +
+    ggplot2::geom_hline(yintercept = 0, linetype = 2, linewidth = 0.4) +
+    ggplot2::facet_wrap(~ panel, scales = "free", ncol = length(traits)) +
+    ggplot2::labs(x = NULL, y = "Partial effect") +
+    ggplot2::theme_bw(base_size = 11) +
+    ggplot2::theme(
+      strip.background = ggplot2::element_rect(fill = "white", colour = "black"),
+      strip.text = ggplot2::element_text(face = "bold"),
+      panel.grid = ggplot2::element_line(colour = "grey90", linewidth = 0.25),
+      legend.position = "bottom"
+    )
+
+  if (requireNamespace("svglite", quietly = TRUE)) {
+    ggplot2::ggsave(out_svg, plot = p, device = svglite::svglite,
+                    width = 10, height = 8, units = "in")
+  } else {
+    ggplot2::ggsave(out_svg, plot = p, device = "svg",
+                    width = 10, height = 8, units = "in")
+  }
+
+  invisible(p)
+}
+```
+
+```{r}
+#| label: gam-smooths-plot-run
+#| fig-width: 12
+#| fig-height: 14
+#| fig-cap: "Partial effects of each environmental driver on each colour trait (GAM smooths, 95% CI)."
+
+plot_environmental_smooths(
+  models  = gam_out$models,
+  env_vars = continuous_vars,
+  traits  = trait_cols,
+  out_svg = file.path(out_dir, "gam_environmental_smooths.svg")
+)
+```
+
+### 4c. Combined GAM summary
+
+One tidy table joining the block-level environmental test with the per-driver
+smooth results, written for the manuscript.
+
+```{r}
+#| label: gam-summary
+#| message: false
+
+gam_summary <- merge(
+  gam_out$table[, c("trait", "n", "p_env", "p_env_fdr",
+                    "delta_R2", "R2_full", "dev_expl")],
+  env_smooths[, c("trait", "variable", "edf", "F", "p_value", "p_FDR")],
+  by = "trait"
+)
+
+write.csv(gam_summary,
+          file.path(out_dir, "gam_environmental_results.csv"),
+          row.names = FALSE)
+
+gam_summary
+```
+
+------------------------------------------------------------------------
+
+## 5. Non-random spatial arrangement of colour
+
+Are light / high-contrast / warm snakes non-randomly distributed in space?
+
+A Mantel test only picks up *gradual* distance-decay gradients; a "checkerboard"
+of localised patches (light snakes in one valley but not the adjacent one) is
+invisible to matrix correlations. We therefore test each trait against a spatial
+null model by **permuting trait values over the observation locations**
+(`PERM` times) and recomputing, on a k-nearest-neighbour graph between
+observations:
+
+* **Moran's *I*** — clustering of similar values (`I > 0`) or alternation of
+  contrasting values (`I < 0`) at the local scale;
+* **neighbour contrast** — mean `|trait_i − trait_j|` among neighbours, elevated
+  under checkerboard-like localised variation regardless of any gradient.
+
+Permutation p-values compare the observed statistic's distance from the
+*estimated null centre* (not an assumed zero), and BH correction is applied
+across all trait × statistic tests together.
+
+```{r}
+#| label: spatial-test-fns
+#| message: false
+
+# k-nearest-neighbour graph on a local equirectangular approximation.
+spatial_nb <- function(d, k = 50) {
+  n <- nrow(d)
+  k <- min(k, n - 1)
+  lon <- d$longitude; lat <- d$latitude
+  latm <- mean(lat) * pi / 180
+  D <- sqrt((outer(lon, lon, "-") * 111.32 * cos(latm))^2 +
+              (outer(lat, lat, "-") * 110.574)^2)
+  diag(D) <- Inf
+  nn <- apply(D, 1, order)[seq_len(k), , drop = FALSE]   # k x n: column = site
+  list(i = rep(seq_len(n), each = k),
+       j = as.vector(nn),
+       w = rep(1 / k, n * k))
+}
+
+spatial_randomness_test <- function(d, traits = trait_cols, k = 6,
+                                    perms = PERM, seed = 42) {
+
+  if (nrow(d) < 10) stop("spatial test: need >= 10 observations.")
+
+  gr <- spatial_nb(d, k = k)
+
+  out <- lapply(traits, function(tr) {
+
+    z <- as.numeric(d[[tr]])
+    if (anyNA(z)) stop(sprintf("Trait '%s' contains missing values.", tr))
+
+    zbar  <- mean(z)
+    zc    <- z - zbar
+    denom <- sum(zc^2)
+
+    # --- Observed statistics -------------------------------------------------
+    obs_I <- if (denom > 0) sum(gr$w * zc[gr$i] * zc[gr$j]) / denom else 0
+    obs_D <- mean(abs(z[gr$i] - z[gr$j]))
+
+    # --- Permutation distributions ------------------------------------------
+    set.seed(seed)
+    perm_I <- numeric(perms)
+    perm_D <- numeric(perms)
+
+    for (r in seq_len(perms)) {
+      zs  <- sample(z)          # redistribute trait values over sites
+      zcs <- zs - zbar
+
+      perm_I[r] <- if (denom > 0) sum(gr$w * zcs[gr$i] * zcs[gr$j]) / denom else 0
+      perm_D[r] <- mean(abs(zs[gr$i] - zs[gr$j]))
+    }
+
+    # --- Null centres estimated from the permutations -----------------------
+    # The k-NN graph is directed/asymmetric and the statistic is a simplified
+    # Moran's I, so we do not assume the null is centred at zero.
+    centre_I <- mean(perm_I)
+    centre_D <- mean(perm_D)
+
+    # --- One-sided p-values --------------------------------------------------
+    pI_upper <- (sum(perm_I >= obs_I) + 1) / (perms + 1)
+    pI_lower <- (sum(perm_I <= obs_I) + 1) / (perms + 1)
+    pD_upper <- (sum(perm_D >= obs_D) + 1) / (perms + 1)
+    pD_lower <- (sum(perm_D <= obs_D) + 1) / (perms + 1)
+
+    # --- Coherent two-sided p-values ----------------------------------------
+    pI_two <- (sum(abs(perm_I - centre_I) >= abs(obs_I - centre_I)) + 1) / (perms + 1)
+    pD_two <- (sum(abs(perm_D - centre_D) >= abs(obs_D - centre_D)) + 1) / (perms + 1)
+
+    # --- Direction of the observed effect -----------------------------------
+    direction_I <- if (obs_I > centre_I) "positive" else if (obs_I < centre_I) "negative" else "none"
+    direction_D <- if (obs_D > centre_D) "high"     else if (obs_D < centre_D) "low"      else "none"
+
+    data.frame(
+      trait = tr,
+      statistic = c("Moran_I", "neighbour_diff"),
+      observed = c(obs_I, obs_D),
+      null_mean = c(centre_I, centre_D),
+      p_perm = c(pI_two, pD_two),
+      p_lower = c(pI_lower, pD_lower),
+      p_upper = c(pI_upper, pD_upper),
+      direction = c(direction_I, direction_D),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  res <- do.call(rbind, out)
+  res$p_FDR <- stats::p.adjust(res$p_perm, method = "BH")
+
+  # --- Plain-language interpretation ----------------------------------------
+  res$interpretation <- "ns"
+
+  idx_I <- res$statistic == "Moran_I" & res$p_FDR < 0.05
+  res$interpretation[idx_I & res$direction == "positive"] <-
+    "positive spatial autocorrelation (similar neighbours)"
+  res$interpretation[idx_I & res$direction == "negative"] <-
+    "negative spatial autocorrelation (contrasting neighbours)"
+
+  idx_D <- res$statistic == "neighbour_diff" & res$p_FDR < 0.05
+  res$interpretation[idx_D & res$direction == "low"] <-
+    "local similarity (neighbours more similar than expected)"
+  res$interpretation[idx_D & res$direction == "high"] <-
+    "local contrast (neighbours more different than expected)"
+
+  rownames(res) <- NULL
+  res
+}
+```
+
+```{r}
+#| label: spatial-test-run
+#| message: false
+
+cat("\n=== Non-random spatial arrangement of colour ===\n")
+cat(sprintf("  (k-NN graph k=%d, %d permutations per trait; two-sided p, BH-FDR)\n",
+            min(6, nrow(dat) - 1), PERM))
+
+sp_test <- spatial_randomness_test(dat)
+print(sp_test)
+
+write.csv(sp_test, file.path(out_dir, "spatial_randomness_tests.csv"),
+          row.names = FALSE)
+```
+
+### 5a. Spatial arrangement maps
+
+Local Moran-scatterplot classification. Each point is coloured by the sign
+combination of its own standardised trait value (*x*) and the mean of its
+k nearest neighbours (*lag*):
+
+* **HH** high–high and **LL** low–low → spatial clustering;
+* **HL** high–low and **LH** low–high → local spatial outliers.
+
+Point size grows with distance from the trait mean. The panel annotation
+reports the global Moran's *I*, its FDR and the direction from the permutation
+test.
+
+```{r}
+#| label: spatial-maps-fn
+#| message: false
+
+plot_spatial_arrangement_maps <- function(
+    d,
+    traits = trait_cols,
+    k = 6,
+    sp_test = NULL,
+    out_svg,
+    aggregate_km = 0
+) {
+
+  if (!all(c("longitude", "latitude") %in% names(d)))
+    stop("longitude and latitude columns are required.")
+
+  if (nrow(d) < 2)
+    stop("Need at least 2 observations.")
+
+  if (aggregate_km < 0)
+    stop("aggregate_km must be >= 0.")
+
+  n <- nrow(d)
+  k_use <- min(k, n - 1)
+
+  gr <- spatial_nb(d, k = k_use)
+
+  cl_cols <- c(
+    HH = "#d73027",
+    LL = "#4575b4",
+    HL = "#f1eeea",
+    LH = "#eff1f2"
+  )
+
+  # --------------------------------------------------------------
+  # Calculate Moran scatterplot classes for each trait
+  # --------------------------------------------------------------
+
+  plot_list <- lapply(traits, function(tr) {
+
+    z_raw <- as.numeric(d[[tr]])
+
+    if (anyNA(z_raw))
+      stop(sprintf("Trait '%s' contains missing values.", tr))
+
+    z <- as.numeric(scale(z_raw))
+
+    lag <- numeric(n)
+    for (ii in seq_len(n)) {
+      lag[ii] <- mean(z[gr$j[gr$i == ii]])
+    }
+
+    cl <- rep(NA_character_, n)
+    cl[z > 0 & lag > 0] <- "HH"
+    cl[z < 0 & lag < 0] <- "LL"
+    cl[z > 0 & lag < 0] <- "HL"
+    cl[z < 0 & lag > 0] <- "LH"
+    cl[z == 0 & lag > 0] <- "LH"
+    cl[z == 0 & lag < 0] <- "LL"
+    cl[z > 0 & lag == 0] <- "HH"
+    cl[z < 0 & lag == 0] <- "HL"
+
+    data.frame(
+      trait = tr,
+      longitude = d$longitude,
+      latitude = d$latitude,
+      z = z,
+      lag = lag,
+      cluster = factor(cl, levels = names(cl_cols)),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  plot_data <- do.call(rbind, plot_list)
+
+  # --------------------------------------------------------------
+  # Aggregate nearby sites for visualization only
+  # --------------------------------------------------------------
+
+  aggregate_points <- function(x, distance_km) {
+
+    if (distance_km == 0) {
+      return(data.frame(
+        longitude = x$longitude,
+        latitude  = x$latitude,
+        cluster   = x$cluster,
+        n_sites   = 1L,
+        mean_absz = abs(x$z)
+      ))
+    }
+
+    out <- list()
+    counter <- 0
+
+    for (cl in levels(x$cluster)) {
+
+      sub <- x[!is.na(x$cluster) & x$cluster == cl, , drop = FALSE]
+
+      if (!nrow(sub)) next
+
+      if (nrow(sub) == 1) {
+        counter <- counter + 1
+        out[[counter]] <- data.frame(
+          longitude = sub$longitude,
+          latitude  = sub$latitude,
+          cluster   = cl,
+          n_sites   = 1L,
+          mean_absz = abs(sub$z)
+        )
+        next
+      }
+
+      latm <- mean(sub$latitude) * pi / 180
+      D <- sqrt(
+        (outer(sub$longitude, sub$longitude, "-") * 111.32 * cos(latm))^2 +
+        (outer(sub$latitude,  sub$latitude,  "-") * 110.574)^2
+      )
+      diag(D) <- 0
+
+      hc <- stats::hclust(stats::as.dist(D), method = "complete")
+      groups <- stats::cutree(hc, h = distance_km)
+
+      for (g in sort(unique(groups))) {
+        ii <- which(groups == g)
+        counter <- counter + 1
+        out[[counter]] <- data.frame(
+          longitude = mean(sub$longitude[ii], na.rm = TRUE),
+          latitude  = mean(sub$latitude[ii],  na.rm = TRUE),
+          cluster   = cl,
+          n_sites   = length(ii),
+          mean_absz = mean(abs(sub$z[ii]), na.rm = TRUE)
+        )
+      }
+    }
+
+    do.call(rbind, out)
+  }
+
+  aggregated_list <- lapply(
+    split(plot_data, plot_data$trait),
+    aggregate_points,
+    distance_km = aggregate_km
+  )
+
+  aggregated <- do.call(
+    rbind,
+    lapply(names(aggregated_list), function(tr) {
+      x <- aggregated_list[[tr]]
+      x$trait <- tr
+      x
+    })
+  )
+
+  rownames(aggregated) <- NULL
+
+  # --------------------------------------------------------------
+  # Annotation
+  # --------------------------------------------------------------
+
+  annotations <- data.frame(
+    trait = traits,
+    label = paste0("k-NN = ", k_use),
+    stringsAsFactors = FALSE
+  )
+
+  if (!is.null(sp_test)) {
+    for (tr in traits) {
+      sub <- sp_test[
+        sp_test$trait == tr & sp_test$statistic == "Moran_I",
+        , drop = FALSE
+      ]
+      if (nrow(sub)) {
+        ptxt <- if (sub$p_FDR[1] <= 0.001) "FDR < 0.001" else sprintf("FDR = %.3f", sub$p_FDR[1])
+        direction_txt <- if (sub$direction[1] == "positive") {
+          "Positive spatial autocorrelation"
+        } else if (sub$direction[1] == "negative") {
+          "Negative spatial autocorrelation"
+        } else {
+          "No directional spatial autocorrelation"
+        }
+        annotations$label[annotations$trait == tr] <- paste0(
+          "Moran's I = ", sprintf("%.2f", sub$observed[1]), "; ", ptxt, "\n", direction_txt
+        )
+      }
+    }
+  }
+
+  # --------------------------------------------------------------
+  # Map extent
+  # --------------------------------------------------------------
+
+  x_range <- range(d$longitude, na.rm = TRUE)
+  y_range <- range(d$latitude,  na.rm = TRUE)
+  x_pad <- max(diff(x_range) * 0.05, 0.1)
+  y_pad <- max(diff(y_range) * 0.05, 0.1)
+  x_limits <- c(x_range[1] - x_pad, x_range[2] + x_pad)
+  y_limits <- c(y_range[1] - y_pad, y_range[2] + y_pad)
+
+  # --------------------------------------------------------------
+  # World map
+  # --------------------------------------------------------------
+
+  world <- NULL
+  if (requireNamespace("maps", quietly = TRUE)) {
+    world <- ggplot2::map_data("world")
+    world <- world[
+      world$long >= x_limits[1] & world$long <= x_limits[2] &
+      world$lat  >= y_limits[1] & world$lat  <= y_limits[2],
+      , drop = FALSE
+    ]
+  }
+
+  # --------------------------------------------------------------
+  # Plot
+  # --------------------------------------------------------------
+
+  p <- ggplot2::ggplot(aggregated, ggplot2::aes(x = longitude, y = latitude))
+
+  if (!is.null(world) && nrow(world) > 0) {
+    p <- p +
+      ggplot2::geom_polygon(
+        data = world,
+        ggplot2::aes(x = long, y = lat, group = group),
+        inherit.aes = FALSE,
+        fill = "grey95", colour = "grey75", linewidth = 0.25
+      )
+  }
+
+  p <- p +
+    ggplot2::geom_point(
+      ggplot2::aes(fill = cluster, size = mean_absz, stroke = n_sites),
+      shape = 21, colour = "grey20") +
+    ggplot2::scale_size_continuous(aesthetics = "stroke", range = c(0.2, 2), name = "Sites merged") +
+    ggplot2::scale_fill_manual(
+      values = cl_cols,
+      drop = FALSE,
+      labels = c(HH = "HH: high\u2013high", LL = "LL: low\u2013low",
+                 HL = "HL: high\u2013low", LH = "LH: low\u2013high"),
+      name = "Moran scatterplot class"
+    ) +
+    ggplot2::scale_size_continuous(
+      range = c(1.5, 6),
+      name = "Mean |z| (distance from trait mean)"
+    ) +
+    ggplot2::facet_wrap(~ trait, ncol = 2) +
+    ggplot2::coord_cartesian(xlim = x_limits, ylim = y_limits, expand = FALSE) +
+    ggplot2::labs(x = "Longitude", y = "Latitude") +
+    ggplot2::theme_bw(base_size = 11) +
+    ggplot2::theme(
+      strip.background = ggplot2::element_rect(fill = "white", colour = "black"),
+      strip.text = ggplot2::element_text(face = "bold"),
+      panel.grid = ggplot2::element_line(colour = "grey90", linewidth = 0.25),
+      legend.position = "bottom",
+      legend.box = "vertical",
+      plot.margin = ggplot2::margin(8, 8, 8, 8)
+    ) +
+    ggplot2::geom_text(
+      data = unique(merge(annotations, data.frame(trait = traits))),
+      ggplot2::aes(x = -Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      hjust = -0.02, vjust = 1.15, size = 3.0, lineheight = 1.05
+    )
+
+  # --------------------------------------------------------------
+  # Save SVG
+  # --------------------------------------------------------------
+
+  if (requireNamespace("svglite", quietly = TRUE)) {
+    ggplot2::ggsave(filename = out_svg, plot = p, device = svglite::svglite,
+                     width = 9, height = 8, units = "in")
+  } else {
+    ggplot2::ggsave(filename = out_svg, plot = p, device = "svg",
+                     width = 9, height = 8, units = "in")
+  }
+
+  invisible(p)
+}
+
+```
+
+```{r}
+plot_spatial_arrangement_maps(
+  dat,
+  k = 30,
+  aggregate_km = 30,
+  sp_test = sp_test,
+  out_svg = file.path(
+    out_dir,
+    "spatial_arrangement_k10.svg"
+  )
+)
+```
+------------------------------------------------------------------------
+
+## 6. Outputs and headline numbers
+
+All tables and figures are written to `MLM_results_Vipera_berus/`. The final cells print the
+headline numbers used in the text.
+
+```{r}
+#| label: outputs-summary
+
+cat(sprintf("\nResults written to: %s\n", out_dir))
+cat("\n--- Headline numbers ---\n")
+
+cat("GAM per-trait environmental block (p, FDR, delta R2):\n")
+print(gam_out$table[, c("trait", "p_env", "p_env_fdr", "delta_R2")])
+
+cat("\nSpatial randomness per trait (Moran's I & neighbour contrast; p, FDR):\n")
+print(sp_test[, c("trait", "statistic", "observed", "p_FDR", "interpretation")],
+      row.names = FALSE)
+```
+
+```{r}
+#| label: files-written
+
+list.files(out_dir)
+```
+
+```{r}
+#| label: session-info
+#| echo: false
+
+sessionInfo()
+```
